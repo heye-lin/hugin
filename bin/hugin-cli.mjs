@@ -144,6 +144,9 @@ function pruneStaleWorktree(dir) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const parked = `${dir}.stale-${stamp}`;
   fs.renameSync(dir, parked);
+  // `git worktree prune` has no per-path form. It only drops admin entries whose
+  // worktree directory is gone or whose gitdir link is broken; it never deletes
+  // files, so another platform's registrations can be re-added harmlessly.
   capture('git', ['worktree', 'prune']);
   console.error(`moved unusable worktree aside: ${parked}`);
   console.error('  inspect it before deleting; its .git link points at another platform');
@@ -159,7 +162,7 @@ function work(run, task, args) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) || branch.includes('..')) {
     fail(`invalid branch: ${JSON.stringify(branch)}`);
   }
-  const dir = path.join(WORKTREES, `${run}-${task}`);
+  const dir = taskWorktree(run, task);
   if (!inside(WORKTREES, dir)) fail(`refusing worktree path outside .claude/worktrees: ${dir}`);
   const pointer = path.join(RUNS, run, 'tasks', task, 'worktree.txt');
 
@@ -171,8 +174,15 @@ function work(run, task, args) {
     write(pointer, `${dir}\n`);
     console.log(dir);
     console.log(`branch: ${requireOk(capture('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']), 'git branch').trim()}`);
-    console.log(`head:   ${requireOk(capture('git', ['-C', dir, 'rev-parse', '--short', 'HEAD']), 'git head').trim()}`);
+    const current = requireOk(capture('git', ['-C', dir, 'rev-parse', 'HEAD']), 'git head').trim();
+    console.log(`head:   ${current.slice(0, 7)}`);
     console.log('(reused existing worktree)');
+    if (flagValue(args, '--base')) {
+      const wanted = capture('git', ['rev-parse', '--verify', `${flagValue(args, '--base')}^{commit}`]);
+      if (wanted.status === 0 && wanted.stdout.trim() !== current) {
+        console.error(`warning: existing worktree is at ${current.slice(0, 7)}, not --base ${flagValue(args, '--base')}`);
+      }
+    }
     return;
   }
 
@@ -261,6 +271,11 @@ function collect(run, task) {
     if (!ref || !ref.startsWith(`.hugin/runs/${run}/logs/`)) continue;
     if (!/^[A-Za-z0-9._-]+$/.test(ref.slice(`.hugin/runs/${run}/logs/`.length))) continue;
     const logFrom = path.join(worktree, ref);
+    const logTo = path.join(ROOT, ref);
+    if (!inside(RUNS, logTo)) {
+      console.error(`warning: referenced log is outside .hugin/runs: ${ref}`);
+      continue;
+    }
     let logStat;
     try {
       logStat = fs.lstatSync(logFrom);
@@ -272,7 +287,11 @@ function collect(run, task) {
       console.error(`warning: referenced log is not a regular file: ${ref}`);
       continue;
     }
-    write(path.join(RUNS, ref), read(logFrom));
+    if (logStat.size === 0) {
+      console.error(`warning: referenced log is empty: ${ref}`);
+      continue;
+    }
+    write(logTo, fs.readFileSync(logFrom, 'utf8'));
     logs.push(ref);
   }
   for (const ref of logs) console.log(`  ${ref}`);

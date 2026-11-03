@@ -59,9 +59,9 @@ Windows 与 WSL 的 `claude agents` 会话注册表彼此独立；Master 与 wor
 1. Master 写 `run.json`、`brief.md`、`board.json`，建任务。
 2. Master 用 `claude --bg` 派 worker，把任务、AC、文件、证据路径、基线 commit、brief 摘录全部写进提示。
 3. `SessionStart` hook 在每个会话启动时注入 run brief、板状态、最近经验。
-4. Worker 在 worktree 中工作，提交，写 `handoff.json`（含 `memory_candidates`）。
-5. Master 轮询 `claude agents --json --all`；`done` 后读 handoff。也可以打开 `./bin/hugin console` 看同一份文件状态。
-6. Master 派 3 个 reviewer（不同 lens）和 verifier；它们写 reviews/verdict。
+4. Master 先 `hugin work <run> <task>` 建隔离 worktree 并在其中启动 worker。Worker 只改 worktree、留改动不提交，把 `handoff.json`（含 `memory_candidates`）写进 worktree。
+5. Master 轮询 `claude agents --json --all`；`done` 后 `hugin collect` 回收 handoff 与引用的日志，再由 Master 提交该分支。也可以打开 `./bin/hugin console` 看同一份文件状态。
+6. Master 派 3 个 reviewer（不同 lens）和 verifier；它们只读，把 findings / verdict JSON 作为最终消息返回，由 Master 落盘到 `reviews/`。
 7. 任一门禁失败 → 建修复任务，重新派 implementer；最多 3 轮。
 8. 全部通过 → `final-report.md`；Master 把可复用经验提升到 `.hugin/memory/`；合并由人决定。
 
@@ -74,7 +74,7 @@ Windows 与 WSL 的 `claude agents` 会话注册表彼此独立；Master 与 wor
 3. `.hugin/runs/<run>/brief.md` + `memory.md`：本次 run 的上下文；`SessionStart` 注入摘要。
 4. 原生 auto memory：Master 的个人自动笔记，不作为团队事实来源。
 
-关键点：worker 在 worktree 里，`repoRoot()` 用 `git rev-parse --git-common-dir` 解析主仓库，因此 run 证据、`CURRENT_RUN`、项目记忆都能读到。Evidence 路径以主仓库为基准解析，不依赖 worker 的 cwd。
+关键点：worker 在隔离 worktree 里，`repoRoot()` 用 `git rev-parse --git-common-dir` 解析主仓库，因此 run 证据、`CURRENT_RUN`、项目记忆都能读到。Evidence 路径以主仓库为基准解析，不依赖 worker 的 cwd；worker 写在 worktree 内的 handoff 由 `hugin collect` 复制回主仓库。
 
 ## 控制台
 

@@ -51,8 +51,8 @@
 ## 数据来源
 
 - `.hugin/runs/<run>/run.json`、`board.json`、`brief.md`、`memory.md`、`final-report.md`
-- `tasks/<task>/handoff.json`、`tasks/<task>/verdict.json`
-- `reviews/<task>-<lens>.json`、`reviews/<task>-verdict.json`
+- `tasks/<task>/handoff.json`
+- `reviews/<task>-<lens>.json`、`reviews/<task>-verdict.json`（规范路径；`tasks/<task>/verdict.json` 与 `reviews/<task>-verify.json` 作为旧兼容回退）
 - `reviews/gate.json`、`reviews/review-board.json`
 - `.hugin/memory/INDEX.md`、`lessons.md`
 - `claude agents --json --all`

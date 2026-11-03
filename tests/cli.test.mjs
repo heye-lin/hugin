@@ -138,6 +138,47 @@ test('collect copies a complete handoff and rejects a blocked one', () => {
   assert.match(missingBranch.stderr, /branch does not exist/);
 });
 
+test('collect copies referenced logs to the run logs directory, not a nested path', () => {
+  const root = makeRepo();
+  assert.equal(cli(root, 'work', 'r1', 'T1').status, 0);
+
+  const dir = worktreePath(root, 'r1-T1');
+  const logRef = '.hugin/runs/r1/logs/T1-tests.txt';
+  const logPath = path.join(dir, logRef);
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  fs.writeFileSync(logPath, '6 tests OK\n');
+
+  const handoffPath = path.join(dir, '.hugin', 'runs', 'r1', 'tasks', 'T1', 'handoff.json');
+  fs.mkdirSync(path.dirname(handoffPath), { recursive: true });
+  fs.writeFileSync(
+    handoffPath,
+    JSON.stringify({
+      run: 'r1',
+      task: 'T1',
+      status: 'complete',
+      commands_run: [
+        { cmd: 'python -m unittest', exit: 0, log: logRef },
+        { cmd: 'node --test', exit: 0, log: '../escape.txt' },
+        { cmd: 'noop', exit: 0, log: '' },
+      ],
+      ac: [{ criterion: 'x', proof: 'y' }],
+    }),
+  );
+
+  const ok = cli(root, 'collect', 'r1', 'T1');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(
+    fs.readFileSync(path.join(root, logRef), 'utf8'),
+    '6 tests OK\n',
+    'log lands under <root>/.hugin/runs/r1/logs',
+  );
+  assert.ok(
+    !fs.existsSync(path.join(root, '.hugin', 'runs', '.hugin')),
+    'no nested .hugin/runs/.hugin path is created',
+  );
+  assert.ok(!fs.existsSync(path.join(root, '.hugin', 'escape.txt')), 'traversal log ref is ignored');
+});
+
 test('collect ignores forged reviews and refuses links', () => {
   const root = makeRepo();
   assert.equal(cli(root, 'work', 'r1', 'T1').status, 0);

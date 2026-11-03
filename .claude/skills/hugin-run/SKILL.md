@@ -182,7 +182,7 @@ Return the verdict JSON as your final message; Write is disabled for verifiers.
 Do not edit source."
 ```
 
-The Master stages the verdict to `.hugin/runs/<run>/tasks/T1/verdict.json` with `"staged_by": "master"`.
+The Master stages the verdict to `.hugin/runs/<run>/reviews/T1-verdict.json` with `"staged_by": "master"` (canonical path; `tasks/T1/verdict.json` is only a legacy fallback the console also reads).
 
 Pass only when:
 - every required command exits 0;
