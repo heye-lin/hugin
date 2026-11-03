@@ -1,6 +1,7 @@
 .hugin/runs/*
 !.hugin/runs/.gitkeep
 .hugin/CURRENT_RUN
+.hugin/config.json
 .hugin/hook-events.jsonl
 .hugin/phase0/
 .hugin/hooks.log

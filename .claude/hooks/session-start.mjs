@@ -31,6 +31,17 @@ function boardSummary(file) {
   }
 }
 
+function readLanguage(root) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.hugin', 'config.json'), 'utf8'));
+    return typeof cfg.language === 'string' && cfg.language.trim()
+      ? cfg.language.trim()
+      : 'zh-CN';
+  } catch {
+    return 'zh-CN';
+  }
+}
+
 const input = await readInput();
 const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const root = repoRoot(cwd);
@@ -40,7 +51,8 @@ if (!fs.existsSync(path.join(root, '.hugin'))) {
 }
 
 const run = currentRunId(cwd);
-const parts = ['Hugin memory (injected at session start)', `repo: ${root}`];
+const language = readLanguage(root);
+const parts = ['Hugin memory (injected at session start)', `repo: ${root}`, `language: ${language}`];
 
 if (run) {
   const dir = path.join(root, '.hugin', 'runs', run);
@@ -66,6 +78,7 @@ if (lessons) parts.push('', '## Recent lessons', lessons);
 
 parts.push(
   '',
+  `Run language: ${language}. Write the brief, handoffs, reviews, and final report in this language.`,
   'Project memory index: .hugin/memory/INDEX.md (also loaded through CLAUDE.md).',
   'Run evidence is authoritative. Memory notes are context, not proof.',
 );

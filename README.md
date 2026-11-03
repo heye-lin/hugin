@@ -15,37 +15,40 @@ Hugin 是一套“主 Claude 监工、多个后台子 Claude 分工”的工程�
 
 ## 前置条件
 
-- Windows 11 + WSL2 Ubuntu
-- WSL 内已安装：`claude`（2.1.317+）、`node`、`git`、`curl`
-- 本地代理可达：`http://127.0.0.1:3425`（WSL 镜像网络下 `127.0.0.1` 可用）
+- Windows 10/11（原生）或 WSL2 Ubuntu
+- `claude`（2.1.317+）、`node`（24+）、`git` 在 PATH
 - 项目已 `git init`（后台会话的工作树隔离依赖 git）
+
+Windows 原生不需要 WSL；`ng` 直接调用 Windows 侧的 `claude`。WSL 内命令相同。
 
 ## 第一次使用
 
-1. 在 Windows Terminal 打开 Ubuntu：
-   ```bash
-   cd /mnt/d/code/Hugin
-   ./bin/hugin doctor
-   ```
-2. 第一次启动会要求信任该目录；接受一次即可：
-   ```bash
-   ./bin/hugin start
-   ```
-   进入主会话后可以先用 `/status` 确认环境，然后退出。
-3. 再开一个标签页打开看板：
-   ```bash
-   cd /mnt/d/code/Hugin
-   ./bin/hugin dashboard
-   ```
-   或者打开 Web 控制台（只读）：
-   ```bash
-   ./bin/hugin console
-   # http://127.0.0.1:8787
-   ```
-   或者从 Windows 侧一键开两个标签：
-   ```powershell
-   .\bin\hugin.ps1
-   ```
+Windows（PowerShell / cmd）：
+
+```powershell
+cd D:\code\Hugin
+ng doctor --quick
+ng start
+```
+
+WSL：
+
+```bash
+cd /mnt/d/code/Hugin
+ng doctor --quick
+ng start
+```
+
+第一次启动会要求信任该目录；接受一次即可。进入主会话后可以先用 `/status` 确认环境，然后退出。
+
+另开一个窗口看进度：
+
+```powershell
+ng dashboard
+ng console    # http://127.0.0.1:8787
+```
+
+> 不要混用两个平台的 Master/worker：Windows 与 WSL 的 `claude agents` 各自维护后台会话注册表。`.hugin/runs` 证据共享，但会话要在同一平台内 `attach` / `stop`。
 
 ## 跑一次受监督的任务
 

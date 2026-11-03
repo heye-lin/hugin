@@ -1,12 +1,12 @@
 # 操作手册
 
-所有命令都在 WSL 里、项目根目录执行。Windows 侧只负责开标签页。
+所有命令都在项目根目录执行；Windows PowerShell 与 WSL 都支持，统一用 `ng`（等价于 `./bin/hugin`）。两侧后台会话注册表独立，不要混用。
 
 ## 0. 开工前
 
 ```bash
-./bin/hugin doctor          # 全量检查
-./bin/hugin doctor --quick  # 跳过耗时项
+ng doctor          # 全量检查
+ng doctor --quick  # 跳过耗时项
 ```
 
 `FAIL` 的常见原因：
@@ -15,33 +15,29 @@
 |---|---|
 | `inside a git repository` | `git init && git add -A && git commit -m "init"` |
 | `claude agents JSON` | 升级 Claude Code；确认 `claude agents --json` 单跑可用 |
-| `proxy 127.0.0.1:3425` | 启动本地代理；WSL 需镜像网络 |
+| `proxy 127.0.0.1:3425` | 仅 WSL 检查；启动本地代理，WSL 需镜像网络 |
 | `.hugin/runs writable` | `mkdir -p .hugin/runs && chmod u+w .hugin/runs` |
-| 其他 `claude` 检查 | 在 WSL 登录 shell 里 `command -v claude` 确认 PATH |
+| 其他 `claude` 检查 | 在所用平台用 `command -v claude`（WSL）或 `where claude`（Windows）确认 PATH |
 
 ## 1. 启动
 
-两个标签页：
+两个窗口：
 
 ```bash
-# Tab 1
-./bin/hugin start
+# Window 1
+ng start
 
-# Tab 2
-./bin/hugin dashboard
+# Window 2
+ng dashboard
 ```
 
-Windows 侧一键：
-
-```powershell
-.\bin\hugin.ps1
-```
+Windows 与 WSL 都可以；但 Master 和 worker 必须在同一平台。不要用 Windows 的 Master 去 attach WSL 的后台会话，反之亦然。
 
 ## 2. 建 run
 
 ```bash
-./bin/hugin new-run              # 用时间戳
-./bin/hugin new-run 20261103-fix-divide
+ng new-run              # 用时间戳
+ng new-run 20261103-fix-divide
 ```
 
 产物：
@@ -117,12 +113,12 @@ Verify: python3 -m unittest discover -s examples/fixture -v
 
 ```bash
 claude agents --json --all
-./bin/hugin status        # 默认隐藏 stopped 会话
-./bin/hugin status --all  # 包含已停止会话
-./bin/hugin console      # 只读 Web 看板；同一份文件状态 + attention 队列
+ng status        # 默认隐藏 stopped 会话
+ng status --all  # 包含已停止会话
+ng console      # 只读 Web 看板；同一份文件状态 + attention 队列
 ```
 
-`./bin/hugin console` 默认监听 `127.0.0.1:8787`；它不写文件，也不替你处理权限。
+`ng console` 默认监听 `127.0.0.1:8787`；它不写文件，也不替你处理权限。
 
 只看本次 run：
 
@@ -135,9 +131,9 @@ claude agents --json --all | jq -r '.[] | select(.name | startswith("hugin-<run>
 | state | 动作 |
 |---|---|
 | `working` | 继续等；不要重复派同一任务 |
-| `blocked` | 读 `waitingFor`；让用户 `./bin/hugin attach <id>` 处理，或拆更小的任务重派 |
+| `blocked` | 读 `waitingFor`；让用户 `ng attach <id>` 处理，或拆更小的任务重派 |
 | `done` | 读 handoff，核对 `status`、`commands_run`、`ac` |
-| `failed` | `./bin/hugin logs <id>` 看原因；修提示后重派，最多 3 次 |
+| `failed` | `ng logs <id>` 看原因；修提示后重派，最多 3 次 |
 | `stopped` | 确认是人停的还是异常；需要就 `claude respawn <id>` 或重派 |
 
 轮询节奏：至少间隔 30–60 秒，不要紧循环。
@@ -214,8 +210,8 @@ BLOCK 时：
 4. 不写密钥、隐私、易变日志或未经证实的猜测。
 
 ```bash
-./bin/hugin memory          # 检查索引与最近经验
-./bin/hugin recall "关键词"  # 确认没有重复条目
+ng memory          # 检查索引与最近经验
+ng recall "关键词"  # 确认没有重复条目
 ```
 
 然后：
@@ -237,7 +233,7 @@ git merge --no-ff <branch>
 Master 重启后：
 
 ```bash
-./bin/hugin status
+ng status
 cat .hugin/runs/<run>/run.json
 cat .hugin/runs/<run>/board.json
 ls .hugin/runs/<run>/tasks/*/handoff.json
@@ -279,7 +275,7 @@ hook 用 `git rev-parse --git-common-dir` 找到主仓库，Evidence 的相对�
 
 **SessionStart 注入的内容不对**
 
-检查 `.hugin/CURRENT_RUN` 是否指向想看的 run；hook 读取 `repoRoot` 下的 `CURRENT_RUN`、run `brief.md`/`memory.md`/`board.json` 和 `.hugin/memory/lessons.md`。用 `./bin/hugin status` 和 `./bin/hugin memory` 对照。
+检查 `.hugin/CURRENT_RUN` 是否指向想看的 run；hook 读取 `repoRoot` 下的 `CURRENT_RUN`、run `brief.md`/`memory.md`/`board.json` 和 `.hugin/memory/lessons.md`。用 `ng status` 和 `ng memory` 对照。
 
 **reviewer 说没有权限写 findings**
 

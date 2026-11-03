@@ -3,18 +3,20 @@
 ## 拓扑
 
 ```
-Windows Terminal
-├─ Tab "Hugin Master"  交互式 Claude（Master）
-├─ Tab "Hugin Agents"  claude agents 看板
-└─ 其他 Tab            claude attach <id>（需要人工处理权限时）
+宿主（Windows 原生 或 WSL2 Ubuntu）
+├─ 窗口 "Hugin Master"  交互式 Claude（Master）
+├─ 窗口 "Hugin Agents"  claude agents 看板
+└─ 其他窗口            claude attach <id>（需要人工处理权限时）
 
-Master（Bash 工具）
+Master（Bash / PowerShell 工具）
   ├─ claude --bg --name hugin-<run>-T1-impl --agent hugin-implementer ...
   ├─ claude --bg --name hugin-<run>-T1-review-security --agent hugin-reviewer ...
   ├─ claude --bg --name hugin-<run>-T1-verify --agent hugin-verifier ...
   ├─ claude agents --json --all        # 轮询状态
   ├─ claude logs <id>                  # 读取输出
   └─ claude stop/respawn/attach <id>   # 控制
+
+CLI：ng / bin/hugin / bin/hugin.ps1 → bin/hugin-cli.mjs（Node，跨平台）
 
 每个 Worker
   ├─ 独立上下文 + 独立配额
@@ -23,12 +25,14 @@ Master（Bash 工具）
   └─ 由 TaskCreated / TaskCompleted hooks 约束任务格式与完成证据
 ```
 
+Windows 与 WSL 的 `claude agents` 会话注册表彼此独立；Master 与 worker 必须在同一平台。`.hugin/runs` 文件证据两边共享。
+
 ## 为什么用后台会话，而不是 Agent Teams / tmux
 
 - **官方支持的状态接口**：`claude agents --json` 是文档明确给出的、供另一个 Claude 会话监工使用的接口。
 - **独立上下文与配额**：每个 worker 是一个完整会话，适合审核、测试、安全这种彼此独立的视角。
 - **自动工作树隔离**：后台会话在编辑前会移动到 `.claude/worktrees/` 下的独立 worktree，避免并行写冲突。
-- **Windows/WSL 友好**：不依赖 tmux 或 iTerm2 分屏；Windows Terminal 只需普通标签页。
+- **Windows / WSL 双平台**：CLI 由 Node 实现，不依赖 tmux 或 iTerm2 分屏；Windows Terminal 只需普通标签页。Windows 原生与 WSL 二选一，不要混用两边的后台会话。
 - **Agent Teams 是实验特性**：默认禁用，且分屏在 Windows Terminal 下不受支持。Hugin 关闭了项目级 teams（`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0`），避免具名 subagent 意外变成 teammate。
 
 代价：后台会话之间没有共享任务列表和 mailbox；因此由 Master 维护 `board.json` 作为唯一任务板，worker 通过 handoff 文件回传结果。

@@ -13,4 +13,4 @@
 - 2026-11-04: `SessionStart` 的 `additionalContext` 上限 10000 字符；Hugin 截到 9000。输出必须是可解析 JSON，否则整段被丢弃。（官方 hooks 文档 + 实测 1200 字符）
 - 2026-11-04: 由证据推导 stage 时，`openFindings` 必须在同一函数内计算；漏掉会抛 `ReferenceError` 并让 `node --test` 挂住。（Phase 1）
 - 2026-11-04: WSL 没有配置 git 身份；仓库本地设为 `Hugin <hugin@localhost>`。真实提交前应改成用户自己的身份。（Phase 1）
-- 2026-11-04: Git Bash 会把 `/mnt/...` 改写成 Windows 路径；跨 WSL 调用统一用 PowerShell 或 WSL 内的脚本文件。（Phase 1）
+- 2026-11-04: `ng`/`bin/hugin` 已改为 Node CLI（`bin/hugin-cli.mjs`），Windows 原生和 WSL 共用；Windows 与 WSL 的 `claude agents` 会话注册表独立，Master 与 worker 不能跨平台混用。（Phase 1）

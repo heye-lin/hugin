@@ -7,8 +7,8 @@ Hugin 是一套“主 Claude 监工、多个子 Claude 分工”的工程框架�
 
 ## 项目事实
 
-- 运行环境：WSL2 Ubuntu。Windows 侧用 `bin/hugin.ps1` 打开 Windows Terminal。
-- 项目在 WSL 内路径：`/mnt/d/code/Hugin`。
+- 运行环境：Windows 原生或 WSL2 Ubuntu。`ng` / `bin/hugin` 统一走 Node CLI（`bin/hugin-cli.mjs`），不强制跳 WSL。
+- 项目路径：`D:\code\Hugin`（Windows）/ `/mnt/d/code/Hugin`（WSL）。
 - 主会话：交互式 `claude`（Master）。
 - 子会话：`claude --bg --name hugin-<run>-<task>-<role> ...`。
 - 看板：`claude agents`；机器可读状态：`claude agents --json --all`。
@@ -16,8 +16,9 @@ Hugin 是一套“主 Claude 监工、多个子 Claude 分工”的工程框架�
 - 任务板：`.hugin/runs/<run>/board.json`（Master 是唯一写者）。
 - 证据：`.hugin/runs/<run>/tasks/<task>/handoff.json`。
 - 记忆：`.hugin/memory/`（跨 run）；`.hugin/runs/<run>/brief.md`（本次 run）。`SessionStart` hook 会把摘要注入每个子会话。
-- 看板：`claude agents`；Web 控制台：`./bin/hugin console`（只读，127.0.0.1）。
+- Web 控制台：`ng console`（只读，127.0.0.1）。
 - 不使用 tmux，不依赖 Agent Teams 分屏；所有子 Claude 都是后台会话。
+- Windows 与 WSL 的 `claude agents` 后台会话注册表独立；Master 与 worker 必须在同一平台，不要混用。
 
 ## 记忆规则
 

@@ -7,6 +7,12 @@ description: Run a Hugin supervised multi-Claude session. Use when the user asks
 
 You are the Master. Follow these steps in order. Do not skip the gates and do not claim completion without evidence.
 
+## Language
+
+Read `.hugin/config.json` (`language`, default `zh-CN`). If the file is missing or the user asks to change it, ask once — 中文 / English / other — then persist with `./bin/hugin lang <code>`.
+
+Use that language for every user-facing message, `brief.md`, task descriptions, dispatch prompts, and `final-report.md`. Put `Language: <code>` in every worker prompt.
+
 ## 0. Preflight
 
 ```bash
@@ -37,7 +43,7 @@ claude --bg --name "hugin-<run>-plan" \
   --agent hugin-planner \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "Read the repository and decompose this requirement into tasks. Requirement: <text>. Return the task table."
+  "Read the repository and decompose this requirement into tasks. Requirement: <text>. Language: <code>. Return the task table."
 ```
 
 Then `claude agents --json --all`, wait for `state: done`, and read its output with `claude logs <id>`.
@@ -80,7 +86,7 @@ claude --bg --name "hugin-<run>-T1-impl" \
   --agent hugin-implementer \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "Run <run>, task T1. Repo: /mnt/d/code/Hugin. Base commit: <sha>.
+  "Run <run>, task T1. Language: <code>. Repo: /mnt/d/code/Hugin. Base commit: <sha>.
 Brief: .hugin/runs/<run>/brief.md
 Relevant memory: <1-3 lines from INDEX/lessons>
 Allowed files: <files>.
@@ -129,7 +135,7 @@ claude --bg --name "hugin-<run>-T1-review-correctness" \
   --agent hugin-reviewer \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "Run <run>, task T1, lens=correctness. Base <sha>, head <branch>.
+  "Run <run>, task T1, lens=correctness. Language: <code>. Base <sha>, head <branch>.
 Read the task AC and handoff at <handoff>.
 Inspect git diff <sha>...<branch> in /mnt/d/code/Hugin.
 Write findings JSON to .hugin/runs/<run>/reviews/T1-correctness.json.
@@ -147,7 +153,7 @@ claude --bg --name "hugin-<run>-T1-verify" \
   --agent hugin-verifier \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "Run <run>, task T1. Worktree: <path>, branch: <branch>.
+  "Run <run>, task T1. Language: <code>. Worktree: <path>, branch: <branch>.
 Read handoff <path> and all reviewer JSON under .hugin/runs/<run>/reviews/.
 Re-run: <exact commands>.
 Write verdict JSON to .hugin/runs/<run>/tasks/T1/verdict.json.
@@ -189,6 +195,7 @@ Stop workers with `claude stop <id>` and update `board.json` to `status: done` o
 
 ## Hard rules
 
+- Use the run language from `.hugin/config.json`; do not switch mid-run.
 - Never sign off your own or a worker's unverified output.
 - Reviewers and verifiers are read-only.
 - One implementer at a time on the same files.

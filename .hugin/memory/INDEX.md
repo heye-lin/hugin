@@ -5,7 +5,7 @@
 
 ## 环境
 
-- WSL2 Ubuntu；项目在 `/mnt/d/code/Hugin`；命令走 WSL 登录 shell（node 在 nvm 下）。→ `docs/runbook.md`
+- Windows 原生或 WSL2 Ubuntu；项目 `D:\code\Hugin` / `/mnt/d/code/Hugin`；命令统一 `ng`（Node CLI）。→ `docs/runbook.md`
 - 首次 `claude --bg` 前必须人工接受一次 workspace trust，脚本不能代做。→ `docs/VALIDATION.md`
 
 ## 架构

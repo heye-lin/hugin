@@ -190,3 +190,23 @@ Content-Security-Policy: default-src 'self'; ...
 - `/review-board`、`/pre-merge-gate` 运行时行为。
 - 异族模型探测。
 - 原生 auto memory 在后台会话中的实际开关状态。
+
+## 11. 2026-11-04 Windows 原生验证
+
+背景：`ng` / `bin/hugin` 改为跨平台 Node CLI（`bin/hugin-cli.mjs`），不再强制经 WSL。
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| CLI 语法 | `node --check bin/hugin-cli.mjs` | VERIFIED |
+| 环境 | `ng doctor --quick` | VERIFIED：全部 PASS（Windows、claude 2.1.317、node v24.15.0、git 2.53.0.windows.3、hooks、console、agents JSON、worktree） |
+| 状态 | `ng status` | VERIFIED：`repo: D:\code\Hugin`、`run: hugin-self-iter`、`lang: zh-CN`、board 计数 |
+| 语言 | `ng lang en` / `ng lang zh` | VERIFIED：`en-US` / `zh-CN`，写入 `.hugin/config.json` |
+| Console | `ng console --port 8792` + `curl /` | VERIFIED：HTTP 200；`/api/state` 解析 `workers`，`workersError: null` |
+| PowerShell 包装 | `.\bin\hugin.ps1 status` | VERIFIED：输出正常 |
+| WSL 包装 | `wsl ... ./bin/hugin status` | VERIFIED：`repo: /mnt/d/code/Hugin`，可见 WSL 后台会话 |
+
+未验证 / 注意：
+
+- Windows 侧真实 `claude --bg` worker：需在 Windows 的 `ng start` 里接受 trust 后实测。
+- Windows 与 WSL 的 `claude agents` 会话注册表独立；Master 与 worker 必须在同一平台。
+- `ng.cmd`、Git Bash 的 `ng`、WSL 的 `~/.local/bin/ng` 都指向本仓库路径；移动仓库后需重装快捷命令。
