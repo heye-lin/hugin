@@ -28,6 +28,8 @@
       "Bash(printf *)",
       "Bash(test *)",
       "Bash(mktemp *)",
+      "Bash(date *)",
+      "Bash(mkdir *)",
       "Bash(rtk git worktree list *)",
       "Bash(rtk git -C * worktree list *)",
       "Bash(rtk git ls-tree *)",
