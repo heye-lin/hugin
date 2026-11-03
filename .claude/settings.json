@@ -64,6 +64,7 @@
       "Bash(rtk help *)",
       "Bash(./bin/hugin doctor *)",
       "Bash(./bin/hugin status *)",
+      "Bash(./bin/hugin console *)",
       "Bash(./bin/hugin checkpoints *)",
       "Bash(node dist/cli/main.js doctor *)",
       "Bash(node dist/cli/main.js status *)",
