@@ -5,6 +5,8 @@
 
 本文件只记录**实际执行过**的检查。未执行或结果不可信的项明确标为 `UNVERIFIED`。
 
+> 历史记录：以下验证在 T3 迁移到 TypeScript 之前完成，文中 `.mjs` 代码路径与测试数量已过时；当前布局与命令见 `docs/architecture.md`、`docs/runbook.md`。
+
 ## 1. 环境
 
 | 检查 | 命令 | 结果 |

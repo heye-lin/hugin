@@ -5,9 +5,10 @@ Hugin 是一套“主 Claude 监工、多个后台子 Claude 分工”的工程�
 - **主会话（Master）**：交互式 Claude，负责拆解、派工、盯进度、卡门禁、写最终报告。
 - **子会话（Workers）**：`claude --bg` 后台会话，分别做实现、审查、测试、安全、验收。
 - **看板**：`claude agents` / `claude agents --json --all`。
-- **任务与证据**：`.hugin/runs/<run>/` 下的 `board.json`、`handoff.json`、review/verdict。
+- **任务与证据**：`.hugin/runs/<run>/` 下的 `board.json`、`handoff.json`、review/verdict；`collect` 只收回 handoff 与它引用的日志。
+- **检查点**：每个任务收尾提交 worktree、打注解 tag `hugin/<run>/<task>`，并把结果写入 run 级台账；`rollback` 只创建还原分支，不重写历史。
 - **记忆**：`.hugin/memory/`（跨 run）+ `.hugin/runs/<run>/brief.md`（本次 run）；`SessionStart` hook 把摘要注入每个子会话。
-- **Web 控制台**：`./bin/hugin console`，只读，编辑杂志风（`editorial` skill）。
+- **Web 控制台**：`./bin/hugin console`，只读，中文管理后台（React 18 + Ant Design 5）；`hugin start` 默认自动启动。
 - **硬门禁**：`TaskCreated` / `TaskCompleted` hooks，缺字段或缺证据直接阻断。
 - **可选严格门禁**：`/review-board`、`/pre-merge-gate` 动态工作流（并行审查 + 对抗验证）。
 
@@ -39,13 +40,14 @@ ng doctor --quick
 ng start
 ```
 
-第一次启动会要求信任该目录；接受一次即可。进入主会话后可以先用 `/status` 确认环境，然后退出。
+第一次启动会要求信任该目录；接受一次即可。`ng start` 会在后台同时启动只读 Web 控制台（默认 `http://127.0.0.1:8787`；`--no-console` 跳过，`--port` / `HUGIN_CONSOLE_PORT` 改端口）。进入主会话后可以先用 `/status` 确认环境，然后退出。
 
 另开一个窗口看进度：
 
 ```powershell
 ng dashboard
-ng console    # http://127.0.0.1:8787
+ng status --watch    # 终端里每 5 秒刷新计数、队列与会话
+ng console --status  # 控制台是否在跑
 ```
 
 > 不要混用两个平台的 Master/worker：Windows 与 WSL 的 `claude agents` 各自维护后台会话注册表。`.hugin/runs` 证据共享，但会话要在同一平台内 `attach` / `stop`。
@@ -78,39 +80,64 @@ Master 会：
 
 ```
 .claude/agents/       角色定义（planner / implementer / reviewer / verifier）
-.claude/hooks/        SessionStart 记忆注入 + TaskCreated / TaskCompleted 门禁
-.claude/skills/       /hugin-run 监工手册、editorial 视觉风格
+.claude/hooks/        薄启动器：SessionStart 记忆注入 + TaskCreated / TaskCompleted 门禁
+.claude/skills/       /hugin-run 监工手册；editorial 视觉素材（控制台已改用 Ant Design）
 .claude/workflows/    /review-board、/pre-merge-gate 严格门禁
 .claude/hugin/        PROTOCOL.md、worker-settings.json
-bin/                  hugin 命令、Windows 启动器、console 入口
-lib/                  console 后端（只读 HTTP + 状态推导）
-web/                  console 前端（原生 HTML/CSS/JS）
-tests/                console 测试（node --test）
-docs/                 架构、操作手册、任务格式、记忆、控制台、验证记录
+bin/                  转发器 + 薄启动器（加载 dist/，缺构建产物会提示 npm run build）
+src/                  TypeScript 源码（cli / lib / hooks / tests）
+dist/                 tsc 构建产物（提交入库；hooks 与 worktree 直接运行它）
+web/                  管理后台前端源码（React 18 + Ant Design 5，Vite）
+web/dist/             Vite 构建产物（提交入库）
+docs/                 架构、操作手册、任务格式、记忆、控制台、验证记录、决策
 .hugin/memory/        跨 run 记忆（提交入库）
 .hugin/runs/          每次 run 的任务板、证据、报告（已 gitignore）
 examples/fixture/     冒烟测试用最小 Python 模块
 ```
 
+## 构建与测试
+
+TypeScript 源码在 `src/`，`tsc` 输出到 `dist/`；前端源码在 `web/`，Vite 输出到 `web/dist/`。两份产物都提交入库（hooks 与 worktree 需要直接运行），改源码后必须重新构建。
+
+```bash
+npm install                          # typescript、@types/node、React/Ant Design、Vite
+npm run build                        # build-ts（tsc -p tsconfig.json）+ build-web（vite build）
+npm run typecheck                    # tsc --noEmit
+npm test                             # build-ts 后跑 node --test dist/tests/*.test.js
+node --test dist/tests/*.test.js     # 不重新构建，直接跑已编译测试
+node --test --test-name-pattern="buildState" dist/tests/console.test.js   # 单跑一组用例
+```
+
 ## 常用命令
 
 ```bash
-./bin/hugin doctor          # 自检
+./bin/hugin doctor          # 自检（含 dist/ 与 hooks 语法）
 ./bin/hugin doctor --quick  # 跳过耗时检查
-./bin/hugin start           # 主会话
+./bin/hugin start [--no-console] [--port N]
+                            # 主会话；默认自动启动 Web 控制台
 ./bin/hugin dashboard       # 看板
-./bin/hugin console         # Web 控制台 http://127.0.0.1:8787
+./bin/hugin console         # 前台启动只读控制台 http://127.0.0.1:8787
+./bin/hugin console --status
+./bin/hugin console --stop  # 查看/停止后台控制台
 ./bin/hugin memory          # 项目记忆索引 + 最近经验
 ./bin/hugin remember "..."  # 追加一条经验
 ./bin/hugin recall "..."    # 搜索记忆与 run 证据
 ./bin/hugin ps              # 后台会话 JSON
-./bin/hugin status [--all]  # 当前 run + Hugin 会话（--all 含已停止）
+./bin/hugin status [--all]  # 当前 run 计数、队列与会话（--all 含已停止）
+./bin/hugin status --json   # 机器可读：counts / queue / tasks / workers / console
+./bin/hugin status --watch [--interval N]
+                            # 默认每 5 秒清屏重绘；Ctrl-C 退出 0
 ./bin/hugin attach <id>     # 接入某个子会话
 ./bin/hugin logs <id>       # 看子会话输出
 ./bin/hugin stop <id>       # 停止子会话
 ./bin/hugin new-run         # 新建 run
 ./bin/hugin work <run> <task>    # 建/复用任务的隔离 worktree
-./bin/hugin collect <run> <task> # 收回 worktree 里的 handoff/review/verdict
+./bin/hugin collect <run> <task> # 收回 worktree 里的 handoff 与引用日志
+./bin/hugin checkpoint <run> <task> [--note <text>] [--no-push]
+                            # 提交 worktree、打注解 tag、写 run 台账（默认 push）
+./bin/hugin checkpoints <run> [--json]   # 列出台账
+./bin/hugin rollback <run> <task> [--dry-run]
+                            # 创建/切换还原分支，非破坏；拒绝脏工作区与 main/master
 ```
 
 ## 快捷命令 `ng`
@@ -122,7 +149,8 @@ examples/fixture/     冒烟测试用最小 Python 模块
 
 ```bash
 ng doctor        # 自检
-ng start         # 主会话
+ng start         # 主会话（同时启动控制台）
+ng status --watch
 ng console       # Web 控制台
 ```
 
@@ -152,3 +180,6 @@ Windows 侧把 `ng.cmd` 放到任意 PATH 目录即可（当前为 `C:\Users\104
 - [Phase 0 验证记录](docs/VALIDATION.md)
 - [决策 0001：后台会话](docs/decisions/0001-background-sessions.md)
 - [决策 0002：分层记忆](docs/decisions/0002-memory-layers.md)
+- [决策 0003：TypeScript + dist](docs/decisions/0003-typescript-dist.md)
+- [决策 0004：git 检查点](docs/decisions/0004-git-checkpoints.md)
+- [决策 0005：中文管理后台](docs/decisions/0005-console-admin-ui.md)

@@ -34,7 +34,7 @@
 
 ## SessionStart 注入
 
-`.claude/hooks/session-start.mjs` 在 `startup|resume|clear|compact|fork` 时运行，输出 `hookSpecificOutput.additionalContext`，内容包括：
+`.claude/hooks/session-start.mjs`（薄启动器；实现源码 `src/hooks/session-start.ts`，构建到 `dist/hooks/session-start.js`）在 `startup|resume|clear|compact|fork` 时运行，输出 `hookSpecificOutput.additionalContext`，内容包括：
 
 - 主仓库路径（从 worktree 也能解析到主 checkout）
 - 当前 run 的 `run.json` 摘要

@@ -31,6 +31,7 @@ Deps: T0 | none
   "owner": "impl-1",
   "status": "complete",
   "branch": "hugin/T1-fix-divide",
+  "worktree": "D:/code/Hugin/.claude/worktrees/20261103-fix-divide-T1",
   "base": "abc1234",
   "head": "def5678",
   "files_changed": ["examples/fixture/calc.py", "examples/fixture/test_calc.py"],
@@ -67,6 +68,7 @@ Deps: T0 | none
 规则：
 
 - `status` 只能是 `complete` 或 `blocked`。`TaskCompleted` 只放行 `complete`。
+- `branch`、`worktree`、`head`（或 `commit`）是 `collect` 的校验依据：`branch` 声明时必须存在；`worktree` 与磁盘路径不一致只告警；`head` 必须等于 worktree 当前的 HEAD（允许 7 位以上短 SHA），否则 `collect` 退出 1。未声明 `head`/`commit` 时只告警“无法检查新鲜度”。
 - `commands_run` 必须是实际运行过的命令；`exit` 用数字。
 - `ac` 至少一项，且与任务里的 AC 一一对应。
 - 有未验证项就写进 `unverified`，不要假装覆盖。
@@ -129,7 +131,7 @@ Deps: T0 | none
 
 4. `TaskCompleted` 只认主仓库里的证据文件，所以先 `collect` 再标记完成。
 
-5. worker 不提交：在已存在的 worktree 里启动的后台会话，commit 前仍会被询问。Master 收完证据后在 worktree 里提交该分支。
+5. worker 不提交：在已存在的 worktree 里启动的后台会话，commit 前仍会被询问。Master 收完证据后用 `hugin checkpoint <run> <task>` 提交该分支、打注解 tag 并记台账（见 2.2）；worker 自己不做这件事。
 
 reviewer / verifier 是只读角色（`Write` 禁用），把 JSON 作为最终消息返回；Master 原样落盘并在文件里记 `"staged_by": "master"`。
 
@@ -262,9 +264,13 @@ role 取值：`impl`、`review-correctness`、`review-security`、`review-tests`
       ├─ memory.md
       ├─ board.json
       ├─ hooks.log
+      ├─ checkpoints.json
       ├─ final-report.md
       ├─ tasks/
-      │  └─ T1/handoff.json
+      │  └─ T1/
+      │     ├─ handoff.json
+      │     ├─ collected.json
+      │     └─ worktree.txt
       ├─ reviews/
       │  ├─ T1-correctness.json
       │  ├─ T1-security.json

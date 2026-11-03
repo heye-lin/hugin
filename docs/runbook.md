@@ -19,6 +19,19 @@ ng doctor --quick  # 跳过耗时项
 | `.hugin/runs writable` | `mkdir -p .hugin/runs && chmod u+w .hugin/runs` |
 | 其他 `claude` 检查 | 在所用平台用 `command -v claude`（WSL）或 `where claude`（Windows）确认 PATH |
 
+### 构建与测试
+
+源码是 TypeScript（`src/`），产物 `dist/` 与 `web/dist/` 都提交入库。拉取代码后先装依赖；改过源码必须重新构建：
+
+```bash
+npm install
+npm run build                        # tsc + vite build
+npm test                             # build-ts 后跑 dist/tests/*.test.js
+node --test dist/tests/*.test.js     # 不重新构建
+```
+
+`doctor --quick` 会检查 `dist/cli/main.js`、`dist/hooks/*.js`、`bin/*.mjs` 与 `web/dist` 是否存在并可解析。
+
 ## 1. 启动
 
 两个窗口：
@@ -32,6 +45,13 @@ ng dashboard
 ```
 
 Windows 与 WSL 都可以；但 Master 和 worker 必须在同一平台。不要用 Windows 的 Master 去 attach WSL 的后台会话，反之亦然。
+
+`ng start` 默认在后台启动只读 Web 控制台（`http://127.0.0.1:8787`），pid 写 `.hugin/console.pid`，日志写 `.hugin/logs/console.log`；已在健康运行则复用，不会重复启动。`--no-console` 跳过，`--port N` 或 `HUGIN_CONSOLE_PORT` 改端口：
+
+```bash
+ng console --status   # 是否在跑、pid、url
+ng console --stop     # 停止后台控制台
+```
 
 ## 2. 建 run
 
@@ -107,9 +127,13 @@ Verify: python -m unittest discover -s examples/fixture -v   # Windows；WSL 用
 worker `done` 之后：
 
 ```bash
-ng collect <run> T1                        # 收回 handoff/review/verdict 到主仓库
-git -C <worktree-path> add -A && git -C <worktree-path> commit -m "feat(T1): ..."
+ng collect <run> T1                          # 只收 handoff 与 commands_run[].log 引用的日志
+ng checkpoint <run> T1 --note "divide by zero"   # 提交 worktree、打注解 tag、写台账
 ```
+
+`collect` 会校验 `run` / `task` 与命令参数一致、`ac` 非空、handoff 声明的 `head`/`commit` 与 worktree HEAD 一致，失败退出码 1；成功后写 `tasks/T1/collected.json`。日志必须以 `T1-` 开头、不超过 5 MB，目标已存在且内容不同时不覆盖。它**不**收回 review/verdict。
+
+`checkpoint` 默认把分支与 tag `hugin/<run>/<task>` 推到 `origin`；不想推就加 `--no-push`。台账在 `.hugin/runs/<run>/checkpoints.json`。
 
 要点：
 
@@ -124,12 +148,15 @@ git -C <worktree-path> add -A && git -C <worktree-path> commit -m "feat(T1): ...
 
 ```bash
 claude agents --json --all
-ng status        # 默认隐藏 stopped 会话
-ng status --all  # 包含已停止会话
-ng console      # 只读 Web 看板；同一份文件状态 + attention 队列
+ng status                  # 默认隐藏 stopped 会话；含 counts 与就绪队列
+ng status --all            # 包含已停止会话
+ng status --json           # {repo,run,language,counts,queue,tasks,workers,console}
+ng status --watch [--interval N]   # 默认每 5 秒清屏重绘；Ctrl-C 退出 0
+ng console --status        # 后台控制台是否在跑
+ng console                 # 前台启动只读控制台（127.0.0.1:8787）
 ```
 
-`ng console` 默认监听 `127.0.0.1:8787`；它不写文件，也不替你处理权限。
+`counts` 的 `running` 来自本 run `hugin-<run>-*` 且 state=`working` 的会话；`queued` 是 pending 且依赖已完成的就绪任务，按 board 顺序；`review` 是 handoff complete 但未 PASS。`ng console --stop` 停止后台控制台；它不写文件，也不替你处理权限。
 
 只看本次 run：
 
@@ -213,6 +240,17 @@ BLOCK 时：
 - 未验证项
 - 分支与 commit
 
+检查点：
+
+```bash
+ng checkpoints <run>              # 台账：task / commit / tag / 时间 / pushed|local
+ng checkpoints <run> --json
+ng rollback <run> T1 --dry-run    # 只打印将创建的还原分支
+ng rollback <run> T1              # 建/切到 restore/<run>/<task>-<时间戳>
+```
+
+`rollback` 只创建或切换到指向 tag commit 的还原分支，不 reset、不 rebase；拒绝脏工作区和 main/master。已有同名分支且指向不同 commit 时直接失败。
+
 然后提炼记忆：
 
 1. 汇总 handoff 的 `memory_candidates`、反复出现的 finding、非显而易见的修复。
@@ -245,9 +283,12 @@ Master 重启后：
 
 ```bash
 ng status
+ng status --watch
 cat .hugin/runs/<run>/run.json
 cat .hugin/runs/<run>/board.json
+cat .hugin/runs/<run>/checkpoints.json
 ls .hugin/runs/<run>/tasks/*/handoff.json
+ls .hugin/runs/<run>/tasks/*/collected.json
 claude agents --json --all
 ```
 

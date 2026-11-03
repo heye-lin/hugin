@@ -16,7 +16,7 @@ Master（Bash / PowerShell 工具）
   ├─ claude logs <id>                  # 读取输出
   └─ claude stop/respawn/attach <id>   # 控制
 
-CLI：ng / bin/hugin / bin/hugin.ps1 → bin/hugin-cli.mjs（Node，跨平台）
+CLI：ng / bin/hugin / bin/hugin.ps1 → bin/hugin-cli.mjs（薄启动器，设置 HUGIN_ROOT 并 chdir）→ dist/cli/main.js；源码在 src/cli/main.ts，改完 npm run build
 
 每个 Worker
   ├─ 独立上下文 + 独立配额
@@ -26,6 +26,29 @@ CLI：ng / bin/hugin / bin/hugin.ps1 → bin/hugin-cli.mjs（Node，跨平台）
 ```
 
 Windows 与 WSL 的 `claude agents` 会话注册表彼此独立；Master 与 worker 必须在同一平台。`.hugin/runs` 文件证据两边共享。
+
+## 代码布局
+
+Hugin 的运行时代码是 TypeScript，构建产物提交入库；两个入口都是薄启动器：
+
+```
+src/
+├─ cli/main.ts            # 所有 hugin 子命令（含 status / checkpoint / collect）
+├─ cli/console-main.ts    # console 服务进程
+├─ lib/console.ts         # 只读 HTTP 服务 + 状态推导（buildState / summary / queue）
+├─ lib/checkpoints.ts     # checkpoint / checkpoints / rollback 与台账
+├─ hooks/*.ts             # SessionStart / TaskCreated / TaskCompleted
+└─ tests/*.ts             # node --test 测试，编译到 dist/tests/
+
+dist/                     # tsc 产物（提交入库）
+web/src/                  # React 18 + Ant Design 5 管理后台源码
+web/dist/                 # Vite 产物（提交入库）
+bin/hugin-cli.mjs         # 设置 HUGIN_ROOT + chdir(ROOT) → import dist/cli/main.js
+bin/hugin-console.mjs     # 同上 → import dist/cli/console-main.js
+.claude/hooks/*.mjs       # 设置 HUGIN_ROOT → import dist/hooks/*.js；不 chdir（保留真实 cwd）
+```
+
+`dist/` 必须与 `src/` 同步提交：hooks 和 worktree 不经过构建步骤就直接运行 `dist/`。改源码后 `npm run build`（= `build-ts` + `build-web`）。
 
 ## 为什么用后台会话，而不是 Agent Teams / tmux
 
@@ -52,17 +75,21 @@ Windows 与 WSL 的 `claude agents` 会话注册表彼此独立；Master 与 wor
 | `SessionStart` hook | 把 run brief、任务板、最近经验注入每个会话 |
 | hooks | `TaskCreated` 校验任务字段；`TaskCompleted` 校验 handoff |
 | workflows | `/review-board` 三视角 + 对抗验证；`/pre-merge-gate` 测试 + 审查 + 决策 |
-| console | 只读 Web 看板：attention-first、任务证据、会话、记忆 |
+| `hugin status` | 复用 console 状态层：counts、就绪队列、任务阶段、会话；`--json` / `--watch` |
+| `hugin checkpoint` | 提交任务 worktree、打 `hugin/<run>/<task>` 注解 tag、写 `checkpoints.json` 台账 |
+| `hugin rollback` | 只创建/切换到还原分支，不 reset、不重写历史 |
+| console（`src/lib/console.ts`） | 只读 HTTP：`/api/state` 的 `summary` / `queue` + 静态资源 |
+| `web/` | React 18 + Ant Design 5 中文管理后台，3 秒轮询 |
 
 ## 数据流
 
 1. Master 写 `run.json`、`brief.md`、`board.json`，建任务。
 2. Master 用 `claude --bg` 派 worker，把任务、AC、文件、证据路径、基线 commit、brief 摘录全部写进提示。
 3. `SessionStart` hook 在每个会话启动时注入 run brief、板状态、最近经验。
-4. Master 先 `hugin work <run> <task>` 建隔离 worktree 并在其中启动 worker。Worker 只改 worktree、留改动不提交，把 `handoff.json`（含 `memory_candidates`）写进 worktree。
-5. Master 轮询 `claude agents --json --all`；`done` 后 `hugin collect` 回收 handoff 与引用的日志，再由 Master 提交该分支。也可以打开 `./bin/hugin console` 看同一份文件状态。
-6. Master 派 3 个 reviewer（不同 lens）和 verifier；它们只读，把 findings / verdict JSON 作为最终消息返回，由 Master 落盘到 `reviews/`。
-7. 任一门禁失败 → 建修复任务，重新派 implementer；最多 3 轮。
+4. Master 先 `hugin work <run> <task>` 建隔离 worktree 并在其中启动 worker。Worker 只改 worktree、留改动不提交，把 `handoff.json`（含 `branch` / `worktree` / `head` 与 `memory_candidates`）写进 worktree。
+5. Master 轮询 `claude agents --json --all`；`done` 后 `hugin collect` 只收回 handoff 与 `commands_run[].log` 引用的日志，校验 run/task、ac 与 head 新鲜度，写 `collected.json`。随后 `hugin checkpoint <run> <task>` 提交 worktree、打注解 tag 并追加 `checkpoints.json`。终端 `hugin status --watch` 与 Web 控制台读同一份文件状态。
+6. Master 派 3 个 reviewer（不同 lens）和 verifier；它们只读，把 findings / verdict JSON 作为最终消息返回，由 Master 落盘到 `reviews/`。collect 不回收这些文件。
+7. 任一门禁失败 → 建修复任务，重新派 implementer；最多 3 轮。需要回退时用 `hugin rollback` 建还原分支，避免破坏性 reset。
 8. 全部通过 → `final-report.md`；Master 把可复用经验提升到 `.hugin/memory/`；合并由人决定。
 
 ## 记忆
@@ -76,15 +103,22 @@ Windows 与 WSL 的 `claude agents` 会话注册表彼此独立；Master 与 wor
 
 关键点：worker 在隔离 worktree 里，`repoRoot()` 用 `git rev-parse --git-common-dir` 解析主仓库，因此 run 证据、`CURRENT_RUN`、项目记忆都能读到。Evidence 路径以主仓库为基准解析，不依赖 worker 的 cwd；worker 写在 worktree 内的 handoff 由 `hugin collect` 复制回主仓库。
 
-## 控制台
+## 控制台与状态
 
-`./bin/hugin console` 启动一个 Node 标准库 HTTP 服务，只读地读取 `.hugin/runs/`、`.hugin/memory/`，并调用一次 `claude agents --json --all` 获取会话状态。前端是原生 HTML/CSS/JS，使用项目内安装的 `editorial` skill；绑定 loopback，无写接口。
+`src/lib/console.ts` 的 `buildState` 只读地读取 `.hugin/runs/`、`.hugin/memory/`，并调用一次 `claude agents --json --all`。它把每个任务推导成 stage（`attention` / `failed` / `blocked` / `review` / `complete` / `working` / `queued`），并汇总：
 
-信息层级参考 dsh-superagent-prototype 的面板：先“需要人处理的事项”，再健康状态，最后历史；阶段由证据推导，计数可核查。详见 [console.md](console.md)。
+- `summary`：`running`（本 run 的 `working` 会话）、`queued`（pending 且依赖已完成的就绪任务）、`review`（handoff complete 但未 PASS）、`blocked`、`complete`；
+- `queue`：就绪任务，按 `board.json` 顺序。
+
+`createConsoleServer` 只提供 `GET /healthz`、`/api/runs`、`/api/state` 和静态资源，绑定 loopback。静态资源优先 `web/dist`（Vite 产物），未构建时回退 `web/`。CSP 为 antd 的 CSS-in-JS 放行 `style-src 'unsafe-inline'`。
+
+`hugin status` 复用同一个 `buildState`：文本模式打印 repo/run/lang、计数、队列与会话；`--json` 输出 `{repo,run,language,counts,queue,tasks,workers,console}`；`--watch` 默认每 5 秒清屏重绘，Ctrl-C 退出 0。`hugin start` 通过 `ensureConsole` 后台拉起控制台（pidfile + healthz 防重复），`console --status` / `--stop` 管理。
+
+前端是 React 18 + Ant Design 5 的中文管理后台（侧栏：概览 / 任务 / 后台会话 / 运行记录），每 3 秒轮询 `/api/state`。详见 [console.md](console.md) 与 [ADR 0005](decisions/0005-console-admin-ui.md)。
 
 ## 恢复模型
 
-后台会话的对话在 supervisor 中持久化，`claude agents --json --all` 可以看到已完成/已停止的会话；`claude attach` 或 `claude --resume <sessionId>` 可以继续。但不要依赖对话恢复：**run 的真相在文件里**——`run.json`、`board.json`、handoff、reviews、verdict。Master 重启后从这些文件重建上下文。
+后台会话的对话在 supervisor 中持久化，`claude agents --json --all` 可以看到已完成/已停止的会话；`claude attach` 或 `claude --resume <sessionId>` 可以继续。但不要依赖对话恢复：**run 的真相在文件里**——`run.json`、`board.json`、handoff、`collected.json`、`checkpoints.json`、reviews、verdict。Master 重启后从这些文件重建上下文。
 
 ## 安全模型
 

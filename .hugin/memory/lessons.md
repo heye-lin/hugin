@@ -14,3 +14,9 @@
 - 2026-11-04: 由证据推导 stage 时，`openFindings` 必须在同一函数内计算；漏掉会抛 `ReferenceError` 并让 `node --test` 挂住。（Phase 1）
 - 2026-11-04: WSL 没有配置 git 身份；仓库本地设为 `Hugin <hugin@localhost>`。真实提交前应改成用户自己的身份。（Phase 1）
 - 2026-11-04: `ng`/`bin/hugin` 已改为 Node CLI（`bin/hugin-cli.mjs`），Windows 原生和 WSL 共用；Windows 与 WSL 的 `claude agents` 会话注册表独立，Master 与 worker 不能跨平台混用。（Phase 1）
+- 2026-11-04: `claude --bg` 继承 Master 当前 cwd；派工前先 `cd` 到目标任务 worktree，并要求 worker 先 `git rev-parse --abbrev-ref HEAD` 确认分支，否则可能在别的 worktree 上跑。（hugin-iterate T5 首版派错）
+- 2026-11-04: `dist/` 与 `web/dist/` 都提交入库；只改 `src/` 不 `npm run build` 会让 hooks 与 worktree 跑到旧代码；`doctor --quick` 会检查产物是否存在并可解析。（ADR 0003）
+- 2026-11-04: 用户级 `PreToolUse` hook `rtk hook claude` 会把 Bash 命令改写成 `rtk <cmd>`，allow 规则按改写后的字符串匹配；settings 必须同时列 rtk 形式，且 hook 返回 allow 不能替代显式 allow（后台会话仍会弹权限提示）。（hugin-iterate memory）
+- 2026-11-04: worktree 内 `.hugin/runs` 为空（run 文件在主仓库且未被 git 跟踪）；在 worktree 跑 `status --json` 得到 `run:null`、`tasks:[]` 是环境差异，不是回归。（T5 handoff）
+- 2026-11-04: Ant Design 5 使用 CSS-in-JS，运行时注入 `<style>`；CSP 必须放行 `style-src 'unsafe-inline'`，否则样式整体丢失；脚本与网络请求仍限 `'self'`。（ADR 0005）
+- 2026-11-04: `collect` 会校验 handoff 的 `head`/`commit` 是否等于 worktree 当前 HEAD（允许 7 位以上短 SHA），不一致 exit 1；未声明 head 只告警。写完 handoff 后再改文件或提交会让 collect 失败。（T8）

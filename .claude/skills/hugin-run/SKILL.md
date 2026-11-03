@@ -19,6 +19,8 @@ Use that language for every user-facing message, `brief.md`, task descriptions, 
 ./bin/hugin doctor --quick
 ```
 
+If `dist/` is missing on a fresh clone, install and build first: `npm install && npm run build` (TS → `dist/`, Vite → `web/dist/`). Both build outputs are committed and are what hooks, the CLI, and worktrees actually run.
+
 Decide the run id:
 
 - If the invocation names a run (`/hugin-run <run-id>`), use it. Create it only when `.hugin/runs/<run-id>` is missing: `./bin/hugin new-run <run-id>`.
@@ -97,6 +99,7 @@ AC:
 <ac>
 Verify with:
 - <exact command, using python on Windows and python3 on WSL>
+If you change src/ or web/, run `npm run build` so dist/ and web/dist/ match the source, and list the generated files in the handoff.
 Write the handoff inside your worktree to <worktree-path>/.hugin/runs/<run>/tasks/T1/handoff.json (docs/task-format.md).
 Include memory_candidates for reusable, non-obvious facts.
 Do not modify other files. Do not push, do not commit. Do not mark the task complete; leave the worktree uncommitted and report it."
@@ -106,20 +109,18 @@ Prefer plain `git status` / `git diff` / `git log` in worker prompts (cwd is the
 
 On Windows the shell tool depends on the machine: with Git Bash detectable the session gets Bash, otherwise PowerShell, and the two have separate permission namespaces. Tell the worker to use whichever shell tool it actually has and to run **one command per call** — compound `;`/`&&` chains must match every subcommand.
 
+Before dispatch, run `npm install` in the worktree yourself and include a short explicit Bash allowlist in the prompt (build, tests, doctor, read-only git). Background workers otherwise stall on permission prompts for trivial commands like `python -m json.tool` or `rtk wc`. Never widen permissions to get past a prompt — stop and ask the user.
+
 Update `board.json` with the returned short id (the `claude --bg` output prints it) and `state: working`.
 
 When the worker is `done`:
 
 ```bash
-./bin/hugin collect <run> T1     # copies the handoff (and referenced logs) into the run
+./bin/hugin collect <run> T1                        # handoff + commands_run[].log only; validates run/task, AC, head freshness
+./bin/hugin checkpoint <run> T1 --note "<summary>"  # commit worktree + annotated tag hugin/<run>/<task> + checkpoints.json
 ```
 
-Then commit the worker's branch from the Master (a worker started inside a pre-existing worktree is asked before committing, so it must not do this itself):
-
-```bash
-git -C <worktree-path> add -A
-git -C <worktree-path> commit -m "feat(<task>): <summary>"
-```
+`collect` refuses a `complete` handoff whose `run`/`task` do not match, whose `ac` is empty, or whose declared `head`/`commit` no longer equals the worktree HEAD; on success it writes `tasks/T1/collected.json`. Run it **before** `checkpoint`, because `checkpoint` moves HEAD. `checkpoint` commits exactly the tree the worker verified and pushes branch+tag unless `--no-push` is given. Only the Master commits; workers must not.
 
 Then mark the task complete. `TaskCompleted` only sees the main-repo evidence file, so never mark complete before `collect`.
 
@@ -129,6 +130,10 @@ Poll:
 
 ```bash
 claude agents --json --all
+./bin/hugin status              # counts + ready queue for the current run
+./bin/hugin status --json       # machine-readable: counts, queue, tasks, workers, console
+./bin/hugin status --watch      # redraw every 5s; Ctrl-C exits 0
+./bin/hugin console --status    # is the background console healthy?
 ```
 
 Or open the read-only console for the same data plus evidence and memory:
@@ -136,6 +141,8 @@ Or open the read-only console for the same data plus evidence and memory:
 ```bash
 ./bin/hugin console
 ```
+
+`hugin start` launches the console in the background by default (pid `.hugin/console.pid`, log `.hugin/logs/console.log`); `--no-console` skips it. `hugin console --stop` stops it.
 
 Filter by `name` prefix `hugin-<run>-`. For each worker:
 
@@ -185,7 +192,8 @@ Do not edit source."
 The Master stages the verdict to `.hugin/runs/<run>/reviews/T1-verdict.json` with `"staged_by": "master"` (canonical path; `tasks/T1/verdict.json` is only a legacy fallback the console also reads).
 
 Pass only when:
-- every required command exits 0;
+- every required command exits 0 (for code tasks: `npm run build`, `node --test dist/tests/*.test.js`, `./bin/hugin doctor --quick`);
+- `src/` and `dist/` (and `web/` / `web/dist/`) match in the same commit;
 - no `blocker` / high severity finding is open;
 - verifier verdict is `PASS`;
 - every AC has a proof.
