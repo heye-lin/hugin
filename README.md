@@ -108,6 +108,27 @@ examples/fixture/     冒烟测试用最小 Python 模块
 ./bin/hugin new-run         # 新建 run
 ```
 
+## 快捷命令 `ng`
+
+`ng` 等价于 `./bin/hugin`，已注册到两个位置：
+
+- WSL：`~/.local/bin/ng` → `bin/ng`
+- Windows：`%USERPROFILE%\.local\bin\ng.cmd`，经 WSL 登录 shell 执行
+
+```bash
+ng doctor        # 自检
+ng start         # 主会话
+ng console       # Web 控制台
+```
+
+换机器后重新注册：
+
+```bash
+ln -sfn /mnt/d/code/Hugin/bin/ng ~/.local/bin/ng
+```
+
+Windows 侧把 `ng.cmd` 放到任意 PATH 目录即可（当前为 `C:\Users\10438\.local\bin`）。
+
 ## 限制
 
 - 后台会话是 research preview；状态字段与 UI 可能变化。Hugin 以 `claude agents --json` 和 handoff 文件为准，不解析 `~/.claude/jobs/`。
