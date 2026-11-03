@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
  * evidence lives in the main checkout. `--git-common-dir` points at the
  * main .git directory from either location.
  */
-export function repoRoot(cwd) {
+export function repoRoot(cwd: string): string {
   if (process.env.HUGIN_REPO_ROOT) return path.resolve(process.env.HUGIN_REPO_ROOT);
   try {
     const common = execFileSync('git', ['rev-parse', '--git-common-dir'], {
@@ -25,7 +25,7 @@ export function repoRoot(cwd) {
   }
 }
 
-export function readStdin() {
+export function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
     process.stdin.setEncoding('utf8');
@@ -35,7 +35,7 @@ export function readStdin() {
   });
 }
 
-export async function readInput() {
+export async function readInput(): Promise<Record<string, any>> {
   const raw = await readStdin();
   if (!raw.trim()) return {};
   try {
@@ -45,18 +45,18 @@ export async function readInput() {
   }
 }
 
-export function taskDescription(input) {
+export function taskDescription(input: any): any {
   return input.task_description ?? input.description ?? input.task?.description ?? '';
 }
 
-export function field(description, name) {
+export function field(description: any, name: string): string | null {
   const lines = String(description ?? '').split(/\r?\n/);
   const head = new RegExp(`^\\s*${name}\\s*:\\s*`, 'i');
   const anyField = /^\s*[A-Za-z][A-Za-z0-9 _-]*:\s*/;
   const index = lines.findIndex((line) => head.test(line));
   if (index === -1) return null;
   const first = lines[index].replace(head, '').trim();
-  const rest = [];
+  const rest: string[] = [];
   for (let i = index + 1; i < lines.length; i += 1) {
     if (anyField.test(lines[i])) break;
     rest.push(lines[i]);
@@ -64,7 +64,7 @@ export function field(description, name) {
   return [first, ...rest].join('\n').trim();
 }
 
-export function currentRunId(cwd) {
+export function currentRunId(cwd: string): string {
   if (process.env.HUGIN_RUN_DIR) return path.basename(path.resolve(process.env.HUGIN_RUN_DIR));
   try {
     return fs
@@ -75,13 +75,13 @@ export function currentRunId(cwd) {
   }
 }
 
-export function runDir(cwd) {
+export function runDir(cwd: string): string {
   if (process.env.HUGIN_RUN_DIR) return path.resolve(process.env.HUGIN_RUN_DIR);
   const id = currentRunId(cwd);
   return id ? path.join(repoRoot(cwd), '.hugin', 'runs', id) : '';
 }
 
-export function logEvent(cwd, event, detail) {
+export function logEvent(cwd: string, event: string, detail: Record<string, any>): void {
   const dir = runDir(cwd);
   const target = dir
     ? path.join(dir, 'hooks.log')
@@ -94,15 +94,15 @@ export function logEvent(cwd, event, detail) {
   }
 }
 
-export function fail(message) {
+export function fail(message: string): never {
   process.stderr.write(message.endsWith('\n') ? message : `${message}\n`);
   process.exit(2);
 }
 
-export function ok() {
+export function ok(): never {
   process.exit(0);
 }
 
-export function isYes(value) {
+export function isYes(value: unknown): boolean {
   return /^(1|true|yes|on)$/i.test(String(value ?? ''));
 }

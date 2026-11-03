@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildState, listRuns, createConsoleServer } from '../lib/console.mjs';
+import type { AddressInfo } from 'node:net';
+import { buildState, listRuns, createConsoleServer } from '../lib/console.js';
 
-function makeFixture() {
+function makeFixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-console-'));
   const runDir = path.join(root, '.hugin', 'runs', 'testrun');
   fs.mkdirSync(path.join(runDir, 'tasks', 'T1'), { recursive: true });
@@ -132,20 +133,20 @@ test('buildState surfaces workersError as a system attention item', () => {
 test('HTTP API serves state and blocks path traversal', async () => {
   const root = makeFixture();
   const server = createConsoleServer({ root });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const { port } = server.address() as AddressInfo;
   const base = `http://127.0.0.1:${port}`;
 
   try {
-    const health = await fetch(`${base}/healthz`).then((response) => response.json());
+    const health = (await fetch(`${base}/healthz`).then((response) => response.json())) as any;
     assert.equal(health.ok, true);
 
-    const runs = await fetch(`${base}/api/runs`).then((response) => response.json());
+    const runs = (await fetch(`${base}/api/runs`).then((response) => response.json())) as any;
     assert.equal(runs.runs[0].id, 'testrun');
 
     const stateResponse = await fetch(`${base}/api/state?run=testrun`);
     assert.equal(stateResponse.status, 200);
-    const state = await stateResponse.json();
+    const state = (await stateResponse.json()) as any;
     assert.equal(state.run.id, 'testrun');
     assert.equal(state.tasks[0].id, 'T1');
     assert.equal(stateResponse.headers.get('cache-control'), 'no-store');
@@ -153,7 +154,7 @@ test('HTTP API serves state and blocks path traversal', async () => {
     const traversal = await fetch(`${base}/..%2f..%2fetc%2fpasswd`);
     assert.ok([403, 404].includes(traversal.status));
   } finally {
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

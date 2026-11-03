@@ -4,24 +4,30 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const CLI = fileURLToPath(new URL('../bin/hugin-cli.mjs', import.meta.url));
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, '../..');
+const CLI = path.join(REPO_ROOT, 'bin', 'hugin-cli.mjs');
+const DIST = path.join(REPO_ROOT, 'dist');
 
-function git(root, args) {
+function git(root: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
   assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
   return result.stdout.trim();
 }
 
 /**
- * The CLI resolves its repository root from its own location, so copying it into
- * a throwaway repository gives each test an isolated root with no side effects.
+ * The CLI resolves its repository root from its own location, so copying the
+ * launcher and the build output into a throwaway repository gives each test an
+ * isolated root with no side effects.
  */
-function makeRepo() {
+function makeRepo(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-cli-'));
   fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
   fs.copyFileSync(CLI, path.join(root, 'bin', 'hugin-cli.mjs'));
+  fs.cpSync(DIST, path.join(root, 'dist'), { recursive: true });
 
   git(root, ['init', '-q']);
   git(root, ['config', 'user.email', 'hugin@test.local']);
@@ -39,14 +45,14 @@ function makeRepo() {
   return root;
 }
 
-function cli(root, ...args) {
+function cli(root: string, ...args: string[]): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [path.join(root, 'bin', 'hugin-cli.mjs'), ...args], {
     cwd: root,
     encoding: 'utf8',
   });
 }
 
-function worktreePath(root, name) {
+function worktreePath(root: string, name: string): string {
   return path.join(root, '.claude', 'worktrees', name);
 }
 

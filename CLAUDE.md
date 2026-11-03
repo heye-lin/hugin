@@ -13,17 +13,23 @@ Hugin 是一套“主 Claude 监工、多个子 Claude 分工”的工程框架�
 ./bin/hugin doctor --quick     # 环境自检 + 所有 node --check（Windows 可用 bin/hugin.ps1 或 ng）
 ```
 
-测试：
+构建与测试（TypeScript 源码在 `src/`，产物提交到 `dist/`；改源码后必须重新构建）：
 
 ```bash
-node --test tests/*.test.mjs                                         # 全部后端测试：console 5 个 + cli 6 个
-node --test --test-name-pattern="buildState" tests/console.test.mjs  # 单跑一组用例
-node --test tests/cli.test.mjs                                       # work/collect 的隔离仓库测试
+npm install                                                          # 安装 typescript 与 @types/node
+npm run build                                                        # tsc -p tsconfig.json，输出 dist/
+npm run typecheck                                                    # tsc --noEmit，只做类型检查
+npm test                                                             # 先构建，再跑 dist/tests/*.test.js（12 个）
+node --test dist/tests/*.test.js                                     # 不重新构建，直接跑已编译测试
+node --test --test-name-pattern="buildState" dist/tests/console.test.js   # 单跑一组用例
+node --test dist/tests/cli.test.js                                   # work/collect 的隔离仓库测试
 
 cd examples/fixture && python -m unittest discover -v                  # Windows
 cd examples/fixture && python3 -m unittest discover -v                 # WSL / Linux
 cd examples/fixture && python -m unittest test_calc.CalcTest.test_divide -v   # 单个用例
 ```
+
+`.claude/hooks/*.mjs` 与 `bin/*.mjs` 只是薄启动器，真实实现由 `dist/` 提供；缺构建产物时它们会提示 `npm run build`。
 
 `examples/fixture` 初始为红（`divide` 未实现、`multiply` 用错运算符），这是设计，不是回归。
 

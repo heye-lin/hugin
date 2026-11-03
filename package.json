@@ -1,0 +1,16 @@
+{
+  "name": "hugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Master Claude supervises background Claude workers through files.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}

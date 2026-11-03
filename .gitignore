@@ -13,5 +13,6 @@ hugin-console-*.png
 !.omc/skills/
 !.omc/skills/**
 **/.omc/state/
+node_modules/
 __pycache__/
 *.pyc

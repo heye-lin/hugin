@@ -1,44 +1,17 @@
 #!/usr/bin/env node
-import { createConsoleServer, DEFAULT_ROOT } from '../lib/console.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const args = process.argv.slice(2);
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, '..');
+const ENTRY = path.join(ROOT, 'dist', 'cli', 'console-main.js');
 
-function flag(name) {
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-}
-
-const port = Number(flag('--port') ?? process.env.HUGIN_CONSOLE_PORT ?? 8787);
-const host = flag('--host') ?? '127.0.0.1';
-
-if (!Number.isInteger(port) || port < 1 || port > 65535) {
-  console.error('hugin console: --port must be an integer between 1 and 65535');
-  process.exit(2);
-}
-
-if (host !== '127.0.0.1' && host !== 'localhost') {
-  console.error('hugin console: refusing to bind a non-loopback host');
-  process.exit(2);
-}
-
-const server = createConsoleServer({ root: DEFAULT_ROOT, host, port });
-
-server.on('error', (error) => {
-  if (error?.code === 'EADDRINUSE') {
-    console.error(`hugin console: port ${port} is already in use`);
-  } else {
-    console.error(`hugin console: ${error?.message ?? error}`);
-  }
+if (!fs.existsSync(ENTRY)) {
+  console.error(`hugin console: build output missing (${path.relative(ROOT, ENTRY)}). Run 'npm run build' first.`);
   process.exit(1);
-});
-
-server.listen(port, host, () => {
-  console.log(`Hugin console: http://${host}:${port}`);
-  console.log('Read-only view over .hugin/runs/, .hugin/memory/, and claude agents.');
-});
-
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    server.close(() => process.exit(0));
-  });
 }
+
+process.env.HUGIN_ROOT = ROOT;
+process.chdir(ROOT);
+await import(pathToFileURL(ENTRY).href);
