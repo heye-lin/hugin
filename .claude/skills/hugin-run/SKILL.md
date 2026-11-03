@@ -102,7 +102,9 @@ Include memory_candidates for reusable, non-obvious facts.
 Do not modify other files. Do not push, do not commit. Do not mark the task complete; leave the worktree uncommitted and report it."
 ```
 
-Prefer plain `git status` / `git diff` / `git log` in worker prompts (cwd is the worktree). The allowlist also covers read-only `git -C <path> <status|diff|log|show|rev-parse|branch>`; `-C` forms of write commands are not allowed, and `git -C ... push` / `reset --hard` are denied.
+Prefer plain `git status` / `git diff` / `git log` in worker prompts (cwd is the worktree). The allowlist covers both shell namespaces: `Bash(...)` and `PowerShell(...)` for the read-only `git -C <path> <status|diff|log|rev-parse>` forms, `python -m unittest`, `node --test`, `node --check`. `-C` forms of write commands are not allowed; `git -C ... push` / `reset --hard` are denied in both.
+
+On Windows the shell tool depends on the machine: with Git Bash detectable the session gets Bash, otherwise PowerShell, and the two have separate permission namespaces. Tell the worker to use whichever shell tool it actually has and to run **one command per call** — compound `;`/`&&` chains must match every subcommand.
 
 Update `board.json` with the returned short id (the `claude --bg` output prints it) and `state: working`.
 

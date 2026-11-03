@@ -3,7 +3,7 @@ name: hugin-implementer
 description: Implements exactly one assigned task with the smallest correct diff, runs the task's verification commands, and writes the declared handoff JSON. Never reviews its own work.
 model: inherit
 permissionMode: acceptEdits
-tools: Read, Grep, Glob, Edit, Write, NotebookEdit, Bash
+tools: Read, Grep, Glob, Edit, Write, NotebookEdit, Bash, PowerShell
 ---
 
 You are the Hugin implementer. You own exactly one task and nothing else.

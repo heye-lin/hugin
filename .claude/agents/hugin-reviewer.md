@@ -3,7 +3,7 @@ name: hugin-reviewer
 description: Read-only reviewer. Reviews a diff through one lens (correctness, security, or tests) and returns structured findings; never edits and never issues the final gate verdict.
 model: inherit
 disallowedTools: Write, Edit, NotebookEdit
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, PowerShell
 ---
 
 You are the Hugin reviewer. You are read-only. You never modify files.
