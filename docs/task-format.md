@@ -103,6 +103,41 @@ Deps: T0 | none
 
 reviewer / verifier 是只读角色（`Write` 禁用），把 JSON 作为最终消息返回；Master 原样落盘并在文件里记 `"staged_by": "master"`。
 
+## 2.2 检查点台账（`.hugin/runs/<run>/checkpoints.json`）
+
+`hugin checkpoint <run> <task> [--note <text>] [--no-push]` 在任务 worktree 里提交改动、打注解 tag `hugin/<run>/<task>`，并把结果写入 run 级台账：
+
+```json
+{
+  "run": "20261103-fix-divide",
+  "checkpoints": [
+    {
+      "task": "T1",
+      "commit": "def5678...",
+      "tag": "hugin/20261103-fix-divide/T1",
+      "branch": "hugin/T1",
+      "note": "divide by zero",
+      "created_at": "2026-11-03T12:00:00.000Z",
+      "pushed": false
+    }
+  ]
+}
+```
+
+字段：
+
+| 字段 | 含义 |
+|---|---|
+| `task` | 任务 id；同一任务再次 checkpoint 会覆盖该行，不重复累积 |
+| `commit` | 检查点提交的完整 SHA（干净 worktree 复用当前 HEAD） |
+| `tag` | 注解 tag 名，格式 `hugin/<run>/<task>`；已存在且指向其他 commit 时命令失败，不移动 tag |
+| `branch` | 打检查点时 worktree 所在分支 |
+| `note` | `--note` 的文本；未提供时为空字符串（提交信息回退为 `checkpoint`） |
+| `created_at` | 检查点写入台账的 ISO-8601 时间 |
+| `pushed` | 分支与 tag 是否都已成功推到 `origin`；`--no-push` 或推送失败时为 `false` |
+
+推送失败只报告并保留本地检查点，命令退出码为 1。`hugin checkpoints <run> [--json]` 读取该台账；`hugin rollback <run> <task> [--branch <name>] [--dry-run]` 只创建指向 tag commit 的还原分支，不 reset、不 rebase、不覆盖已有工作区。
+
 ## 3. Review findings
 
 `.hugin/runs/<run>/reviews/<task>-<lens>.json`：

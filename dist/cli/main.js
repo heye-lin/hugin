@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import * as checkpoints from '../lib/checkpoints.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.HUGIN_ROOT
     ? path.resolve(process.env.HUGIN_ROOT)
@@ -286,6 +287,80 @@ function collect(run, task) {
     const changed = Array.isArray(handoff.files_changed) ? handoff.files_changed.length : 0;
     console.log(`handoff: status=complete ac=${criteria} files_changed=${changed}`);
 }
+function checkpointContext() {
+    return { root: ROOT, runsDir: RUNS, worktreesDir: WORKTREES };
+}
+function checkpoint(run, task, args) {
+    const noPush = args.includes('--no-push');
+    try {
+        const result = checkpoints.checkpoint(checkpointContext(), run, task, {
+            note: flagValue(args, '--note'),
+            push: !noPush,
+        });
+        const { entry } = result;
+        console.log(`checkpoint ${entry.task} @ ${entry.commit.slice(0, 7)}`);
+        console.log(`  branch: ${entry.branch}`);
+        console.log(`  tag:    ${entry.tag}`);
+        console.log(`  ledger: ${path.relative(ROOT, result.ledgerFile)}`);
+        if (noPush) {
+            console.log('  push:   skipped (--no-push)');
+        }
+        else if (result.pushError) {
+            console.error(`  push:   failed — ${result.pushError}`);
+        }
+        else {
+            console.log(`  push:   origin ${entry.branch} + ${entry.tag}`);
+        }
+        if (result.pushError)
+            process.exit(1);
+    }
+    catch (error) {
+        fail(error.message);
+    }
+}
+function listCheckpoints(run, args) {
+    if (!run)
+        fail('usage: hugin checkpoints <run> [--json]');
+    try {
+        const ledger = checkpoints.listCheckpoints(checkpointContext(), run);
+        if (args.includes('--json')) {
+            console.log(JSON.stringify(ledger, null, 2));
+            return;
+        }
+        if (ledger.checkpoints.length === 0) {
+            console.log(`checkpoints: none for ${run}`);
+            return;
+        }
+        console.log(`checkpoints: ${ledger.run} (${ledger.checkpoints.length})`);
+        for (const entry of ledger.checkpoints) {
+            const pushed = entry.pushed ? 'pushed' : 'local';
+            console.log(`  ${entry.task.padEnd(12)} ${entry.commit.slice(0, 7)}  ${entry.tag.padEnd(28)} ${entry.created_at}  ${pushed}`);
+        }
+    }
+    catch (error) {
+        fail(error.message);
+    }
+}
+function rollback(run, task, args) {
+    try {
+        const result = checkpoints.rollback(checkpointContext(), run, task, {
+            branch: flagValue(args, '--branch'),
+            dryRun: args.includes('--dry-run'),
+        });
+        if (result.dryRun) {
+            console.log(`rollback ${result.entry.task}: dry run`);
+            console.log(`  tag:    ${result.tag} -> ${result.commit.slice(0, 7)}`);
+            console.log(`  branch: ${result.branch}${result.created ? ' (would create)' : ' (exists)'}`);
+            console.log('  no branch was created and the working tree was not touched');
+            return;
+        }
+        console.log(`rollback ${result.entry.task}: ${result.tag} -> ${result.commit.slice(0, 7)}`);
+        console.log(`  switched to branch: ${result.branch}`);
+    }
+    catch (error) {
+        fail(error.message);
+    }
+}
 function usage() {
     console.log(`Hugin
 
@@ -300,6 +375,12 @@ Usage:
   hugin new-run [run-id]      Create .hugin/runs/<run-id> and set CURRENT_RUN
   hugin work <run> <task>     Create or reuse the task's isolated worktree
   hugin collect <run> <task>  Copy handoff/review/verdict out of that worktree
+  hugin checkpoint <run> <task> [--note <text>] [--no-push]
+                              Commit and tag the task worktree, record the run ledger
+  hugin checkpoints <run> [--json]
+                              List the run's recorded checkpoints
+  hugin rollback <run> <task> [--branch <name>] [--dry-run]
+                              Create a restore branch at the task's checkpoint
   hugin memory                Show the project memory index and recent lessons
   hugin remember <text>       Append a dated lesson to .hugin/memory/lessons.md
   hugin recall <query>        Search .hugin/memory and run evidence
@@ -620,6 +701,15 @@ switch (cmd) {
         break;
     case 'collect':
         collect(rest[0], rest[1]);
+        break;
+    case 'checkpoint':
+        checkpoint(rest[0], rest[1], rest.slice(2));
+        break;
+    case 'checkpoints':
+        listCheckpoints(rest[0], rest.slice(1));
+        break;
+    case 'rollback':
+        rollback(rest[0], rest[1], rest.slice(2));
         break;
     case 'memory':
         memory();
