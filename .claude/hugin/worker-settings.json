@@ -10,7 +10,8 @@
     "code-review-anthropics@anthropic-plugin-directory": false
   },
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0",
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "0"
   },
   "permissions": {
     "deny": [
