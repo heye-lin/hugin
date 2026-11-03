@@ -73,6 +73,34 @@ Deps: T0 | none
 - 写不出证据时用 `status: "blocked"`，并说明缺什么。
 - `memory_candidates` 只放跨 run 仍成立、且不能从 diff 直接看出的经验；不要放密钥、隐私或“改了什么”的复述。
 
+## 2.1 Worktree 与 collect
+
+后台会话（`claude --bg`）不能写共享检出，也不能写主仓库的 `.hugin/runs/`。证据流程因此分两步：
+
+1. Master 先建隔离工作树：
+
+   ```bash
+   ./bin/hugin work <run> <task> [--base <sha>] [--branch <name>]
+   ```
+
+   默认路径 `.claude/worktrees/<run>-<task>`，默认分支 `hugin/<task>`。命令会先清理无法在本平台使用的陈旧 worktree（例如 WSL 创建、记录 `/mnt/...` gitdir 的目录），并把绝对路径写进 `.hugin/runs/<run>/tasks/<task>/worktree.txt`。
+
+2. 在该 worktree 目录内启动 worker。worker 把 handoff 写到 **worktree 内**的 `.hugin/runs/<run>/tasks/<task>/handoff.json`。
+
+3. worker 结束后 Master 收回证据：
+
+   ```bash
+   ./bin/hugin collect <run> <task>
+   ```
+
+   它把 `tasks/<task>/{handoff,verdict,worktree}.json|txt` 和 `reviews/<task>-*.json` 从 worktree 复制到主仓库的 `.hugin/runs/<run>/`，然后校验 handoff。`status` 不是 `complete` 时退出码为 1。
+
+4. `TaskCompleted` 只认主仓库里的证据文件，所以先 `collect` 再标记完成。
+
+5. worker 不提交：在已存在的 worktree 里启动的后台会话，commit 前仍会被询问。Master 收完证据后在 worktree 里提交该分支。
+
+reviewer / verifier 是只读角色（`Write` 禁用），把 JSON 作为最终消息返回；Master 原样落盘并在文件里记 `"staged_by": "master"`。
+
 ## 3. Review findings
 
 `.hugin/runs/<run>/reviews/<task>-<lens>.json`：
@@ -145,7 +173,8 @@ lens 分工：
 | 任务 | `T<n>` | `T1`、`T2` |
 | 修复任务 | `T<n>-fix<k>` | `T1-fix1` |
 | 会话名 | `hugin-<run>-<task>-<role>` | `hugin-20261103-fix-divide-T1-impl` |
-| 分支 | `hugin/<task>-<slug>` | `hugin/T1-fix-divide` |
+| 分支 | `hugin/<task>` | `hugin/T1` |
+| worktree | `.claude/worktrees/<run>-<task>` | `.claude/worktrees/20261103-fix-divide-T1` |
 | handoff | `.hugin/runs/<run>/tasks/<task>/handoff.json` | — |
 | review | `.hugin/runs/<run>/reviews/<task>-<lens>.json` | — |
 | verdict | `.hugin/runs/<run>/reviews/<task>-verdict.json` | — |

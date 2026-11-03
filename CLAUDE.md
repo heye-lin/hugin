@@ -37,4 +37,6 @@ Hugin 是一套“主 Claude 监工、多个子 Claude 分工”的工程框架�
 ./bin/hugin memory          # 项目记忆索引 + 最近经验
 ./bin/hugin ps              # 打印后台会话 JSON
 ./bin/hugin new-run         # 新建一次 run
+./bin/hugin work <run> <task>    # 建/复用任务的隔离 worktree
+./bin/hugin collect <run> <task> # 把 worktree 里的 handoff/review/verdict 收回 run
 ```

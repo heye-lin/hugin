@@ -14,7 +14,11 @@
   },
   "permissions": {
     "deny": [
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git -C * push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git -C * reset --hard *)",
+      "Bash(rm -rf *)"
     ]
   }
 }
