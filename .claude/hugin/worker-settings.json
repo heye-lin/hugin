@@ -15,6 +15,10 @@
   },
   "permissions": {
     "deny": [
+      "Bash(rtk test *)",
+      "Bash(rtk env *)",
+      "Bash(rtk json *)",
+      "Bash(rtk read *)",
       "Bash(git push *)",
       "Bash(git push)",
       "Bash(git * --output=*)",
