@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
@@ -39,6 +39,13 @@ function cli(root, ...args) {
     return spawnSync(process.execPath, [path.join(root, 'bin', 'hugin-cli.mjs'), ...args], {
         cwd: root,
         encoding: 'utf8',
+    });
+}
+function cliWithEnv(root, env, ...args) {
+    return spawnSync(process.execPath, [path.join(root, 'bin', 'hugin-cli.mjs'), ...args], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, ...env },
     });
 }
 function worktreePath(root, name) {
@@ -161,4 +168,67 @@ test('collect ignores forged reviews and refuses links', () => {
     const linked = cli(root, 'collect', 'r1', 'T1');
     assert.equal(linked.status, 1);
     assert.match(linked.stderr, /regular file/);
+});
+test('status --json reports counts, queue and workers in a parseable object', () => {
+    const root = makeRepo();
+    const runDir = path.join(root, '.hugin', 'runs', 'r1');
+    fs.writeFileSync(path.join(root, '.hugin', 'CURRENT_RUN'), 'r1\n');
+    fs.writeFileSync(path.join(runDir, 'board.json'), JSON.stringify({
+        run: 'r1',
+        tasks: [
+            { id: 'T1', title: 'done', owner: 'impl-1', status: 'complete', deps: [] },
+            { id: 'T2', title: 'awaiting review', owner: 'impl-2', status: 'review', deps: [] },
+            { id: 'T3', title: 'ready', owner: 'impl-3', status: 'pending', deps: ['T1'] },
+            { id: 'T4', title: 'blocked dependency', owner: 'impl-4', status: 'pending', deps: ['T2'] },
+            { id: 'T5', title: 'waiting on T3', owner: 'impl-5', status: 'pending', deps: ['T3'] },
+        ],
+    }));
+    const agents = [
+        { id: 'w1', name: 'hugin-r1-T3-impl', state: 'working', waitingFor: 'tools' },
+        { id: 'w2', name: 'hugin-r1-T4-impl', state: 'blocked', waitingFor: 'permission' },
+        { id: 'w3', name: 'hugin-other-T1-impl', state: 'working' },
+    ];
+    const result = cliWithEnv(root, { HUGIN_AGENTS_JSON: JSON.stringify(agents) }, 'status', '--json');
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(path.resolve(payload.repo), path.resolve(root));
+    assert.equal(payload.run, 'r1');
+    assert.equal(payload.language, 'zh-CN');
+    assert.deepEqual(payload.counts, { running: 1, queued: 1, review: 1, blocked: 1, complete: 1 });
+    assert.deepEqual(payload.queue, [
+        { id: 'T3', title: 'ready', owner: 'impl-3', deps: ['T1'] },
+    ]);
+    assert.equal(payload.tasks.length, 5);
+    assert.deepEqual(payload.workers.map((worker) => worker.id), ['w1', 'w2']);
+    assert.equal(typeof payload.console.running, 'boolean');
+    assert.equal(payload.console.port, 8787);
+});
+test('status --watch clears the screen and keeps redrawing until interrupted', async () => {
+    const root = makeRepo();
+    const child = spawn(process.execPath, [path.join(root, 'bin', 'hugin-cli.mjs'), 'status', '--watch', '--interval', '0.2'], { cwd: root, env: { ...process.env, HUGIN_AGENTS_JSON: '[]' } });
+    let output = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+        output += chunk;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    child.kill('SIGTERM');
+    const exitCode = await new Promise((resolve) => {
+        child.once('exit', (code) => resolve(code));
+    });
+    // Windows terminates a process on SIGTERM without running the JS handler, so
+    // the exit code is null there; Ctrl-C in a real terminal goes through SIGINT.
+    assert.ok(exitCode === 0 || exitCode === null, `unexpected exit code: ${exitCode}`);
+    const redraws = (output.match(/counts:/g) ?? []).length;
+    assert.ok(redraws >= 2, `expected at least two redraws, got ${redraws}`);
+    assert.match(output, /\x1B\[2J/, 'the screen is cleared between redraws');
+});
+test('console --status reports a stopped console without binding a port', () => {
+    const root = makeRepo();
+    const result = cli(root, 'console', '--status', '--json');
+    assert.equal(result.status, 0, result.stderr);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.running, false);
+    assert.equal(status.port, 8787);
+    assert.equal(status.pid, null);
 });

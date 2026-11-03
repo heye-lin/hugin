@@ -5,6 +5,13 @@ import { spawnSync } from 'node:child_process';
 import type { SpawnSyncOptions, SpawnSyncReturns } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as checkpoints from '../lib/checkpoints.js';
+import {
+  buildState,
+  ensureConsole,
+  inspectConsole,
+  stopConsole,
+  DEFAULT_CONSOLE_PORT,
+} from '../lib/console.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.HUGIN_ROOT
@@ -55,6 +62,51 @@ function claude(
 
 function claudeCapture(args: string[]): SpawnSyncReturns<string> {
   return capture(CLAUDE, args);
+}
+
+/**
+ * Hugin background sessions only. `HUGIN_AGENTS_JSON` injects a canned
+ * `claude agents --json` payload so status tests never shell out to claude.
+ */
+function readClaudeWorkers(): { workers: any[]; error: string | null } {
+  let raw: string;
+  const injected = process.env.HUGIN_AGENTS_JSON;
+  if (injected !== undefined) {
+    raw = injected;
+  } else {
+    const result = claudeCapture(['agents', '--json', '--all']);
+    if (result.error) return { workers: [], error: result.error.message };
+    raw = result.stdout;
+  }
+  let all: any;
+  try {
+    all = JSON.parse(raw);
+  } catch {
+    return { workers: [], error: 'claude agents did not return JSON' };
+  }
+  const workers = (Array.isArray(all) ? all : [])
+    .filter((worker: any) => typeof worker?.name === 'string' && worker.name.startsWith('hugin-'))
+    .map((worker: any) => ({
+      id: String(worker.id ?? ''),
+      name: String(worker.name ?? ''),
+      state: String(worker.state ?? worker.status ?? 'unknown'),
+      waitingFor: worker.waitingFor ?? null,
+    }));
+  return { workers, error: null };
+}
+
+function parsePortArgs(args: string[]): number {
+  const inline = args.find((arg) => arg.startsWith('--port='));
+  let raw: string | undefined;
+  if (inline) {
+    raw = inline.slice('--port='.length);
+  } else if (args.includes('--port')) {
+    raw = args[args.indexOf('--port') + 1];
+  }
+  if (raw === undefined || raw === '') raw = process.env.HUGIN_CONSOLE_PORT;
+  if (raw === undefined || raw === '') raw = String(DEFAULT_CONSOLE_PORT);
+  const port = Number(raw);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : NaN;
 }
 
 function read(file: string, fallback = ''): string {
@@ -400,9 +452,12 @@ function usage(): void {
   console.log(`Hugin
 
 Usage:
-  hugin start                 Start the master Claude session in this repo
+  hugin start [--no-console] [--port N]
+                              Start the master Claude session (starts the web console too)
   hugin dashboard             Open the background-agent dashboard (claude agents)
   hugin console [--port N]    Serve the read-only web console on 127.0.0.1
+  hugin console --status|--stop
+                              Show or stop the background web console
   hugin ps [--all]            Print background sessions as JSON
   hugin attach <id|name>      Attach this terminal to a background session
   hugin logs <id|name>        Print recent output of a background session
@@ -419,7 +474,8 @@ Usage:
   hugin memory                Show the project memory index and recent lessons
   hugin remember <text>       Append a dated lesson to .hugin/memory/lessons.md
   hugin recall <query>        Search .hugin/memory and run evidence
-  hugin status [--all]        Show current run and Hugin background sessions
+  hugin status [--all] [--json] [--watch [--interval N]]
+                              Show current run, counts, queue and background sessions
   hugin lang [zh|en|<code>]   Show or set the run language (default zh-CN)
   hugin doctor [--quick]      Check the environment (no mutating actions)
   hugin help                  Show this help`);
@@ -488,78 +544,211 @@ function newRun(id: string | undefined): void {
   console.log(run);
 }
 
-function status(showAll: boolean): void {
+function renderStatus(showAll: boolean): void {
   const run = read(CURRENT_RUN).trim();
+  const { workers, error } = readClaudeWorkers();
+  const state = buildState({
+    root: ROOT,
+    runId: run || undefined,
+    workers,
+    workersError: error,
+  });
+  const activeRun = state.run?.id ?? (run || '');
+
   console.log(`repo: ${ROOT}`);
   if (!isWin) {
     const win = capture('wslpath', ['-w', ROOT]);
     if (win.status === 0 && win.stdout.trim()) console.log(`win:  ${win.stdout.trim()}`);
   }
-  console.log(`run:  ${run || '<none>'}`);
+  console.log(`run:  ${activeRun || '<none>'}`);
   console.log(`lang: ${currentLanguage()}`);
-
-  if (run) {
-    const meta = readJson(path.join(RUNS, run, 'run.json'));
-    if (meta) {
-      console.log(
-        `      ${meta.status ?? 'unknown'}  base=${meta.base ?? '-'}  created=${meta.created_at ?? '-'}`,
-      );
+  if (state.run) {
+    console.log(
+      `      ${state.run.status ?? 'unknown'}  base=${state.run.base ?? '-'}  created=${state.run.createdAt ?? '-'}`,
+    );
+  }
+  if (state.tasks.length > 0) {
+    const byStatus: Record<string, number> = {};
+    for (const task of state.tasks) {
+      const status = String(task.boardStatus || task.status || 'unknown');
+      byStatus[status] = (byStatus[status] ?? 0) + 1;
     }
-    const board = readJson(path.join(RUNS, run, 'board.json'));
-    if (Array.isArray(board?.tasks) && board.tasks.length > 0) {
-      const counts: Record<string, number> = {};
-      for (const task of board.tasks) {
-        const state = task.status ?? 'unknown';
-        counts[state] = (counts[state] ?? 0) + 1;
-      }
-      const summary = Object.entries(counts)
-        .map(([state, count]) => `${state}=${count}`)
-        .join(', ');
-      console.log(`tasks: ${board.tasks.length} total — ${summary}`);
-    }
+    const summary = Object.entries(byStatus)
+      .map(([status, count]) => `${status}=${count}`)
+      .join(', ');
+    console.log(`tasks: ${state.tasks.length} total — ${summary}`);
+  }
+  const counts = state.summary;
+  console.log(
+    `counts: running=${counts.running} queued=${counts.queued} review=${counts.review} blocked=${counts.blocked} complete=${counts.complete}`,
+  );
+  for (const item of state.queue) {
+    console.log(`queued: ${item.id} ${item.title} (${item.owner})`);
   }
   console.log();
 
   console.log(`background sessions (${showAll ? 'all' : 'active'}):`);
-  const result = claudeCapture(['agents', '--json', '--all']);
-  if (result.error) {
-    console.log('  (claude not runnable)');
+  if (error) {
+    console.log(`  (${error})`);
     return;
   }
-  let agents: any;
-  try {
-    agents = JSON.parse(result.stdout);
-  } catch {
-    console.log('  (unavailable)');
-    if (result.stderr.trim()) console.log(`  ${result.stderr.trim()}`);
-    return;
-  }
-  if (!Array.isArray(agents)) {
-    console.log('  (unexpected JSON)');
-    return;
-  }
-
-  const hugin = agents.filter((agent: any) => String(agent.name ?? '').startsWith('hugin-'));
-  const visible = hugin.filter((agent: any) => {
-    const state = String(agent.state ?? agent.status ?? '');
-    return showAll || state !== 'stopped';
-  });
-
+  const visible = workers.filter((worker) => showAll || String(worker.state ?? '') !== 'stopped');
   if (visible.length === 0) {
     console.log('  (none)');
-    const hidden = hugin.length - visible.length;
+    const hidden = workers.length - visible.length;
     if (!showAll && hidden > 0) {
       console.log(`  ${hidden} stopped session(s) hidden — use 'ng status --all'`);
     }
     return;
   }
-
-  for (const agent of visible) {
-    const id = String(agent.id ?? '-').padEnd(12);
-    const state = String(agent.state ?? agent.status ?? '-').padEnd(9);
-    const name = String(agent.name ?? '-').padEnd(34);
-    console.log(`  ${id} ${state} ${name} ${agent.waitingFor ?? '-'}`);
+  for (const worker of visible) {
+    const id = String(worker.id || '-').padEnd(12);
+    const stateLabel = String(worker.state || '-').padEnd(9);
+    const name = String(worker.name || '-').padEnd(34);
+    console.log(`  ${id} ${stateLabel} ${name} ${worker.waitingFor ?? '-'}`);
   }
+}
+
+async function statusJson(args: string[]): Promise<void> {
+  const run = read(CURRENT_RUN).trim();
+  const { workers, error } = readClaudeWorkers();
+  const state = buildState({
+    root: ROOT,
+    runId: run || undefined,
+    workers,
+    workersError: error,
+  });
+  const activeRun = state.run?.id ?? null;
+  const prefix = activeRun ? `hugin-${activeRun}-` : 'hugin-';
+  const scoped = workers.filter((worker) => String(worker.name).startsWith(prefix));
+  const port = parsePortArgs(args);
+  const consoleStatus = await inspectConsole({
+    root: ROOT,
+    port: Number.isInteger(port) ? port : DEFAULT_CONSOLE_PORT,
+  });
+
+  const payload = {
+    repo: ROOT,
+    run: activeRun,
+    language: currentLanguage(),
+    counts: state.summary,
+    queue: state.queue,
+    tasks: state.tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      owner: task.owner,
+      status: task.status,
+      boardStatus: task.boardStatus,
+      stage: task.stage,
+      deps: task.deps,
+      worker: task.worker,
+    })),
+    workers: scoped,
+    console: {
+      running: consoleStatus.running,
+      pid: consoleStatus.pid,
+      port: consoleStatus.port,
+      url: consoleStatus.url,
+    },
+  };
+  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
+async function statusWatch(showAll: boolean, intervalSeconds: number): Promise<void> {
+  const interval = Math.max(0.1, intervalSeconds) * 1000;
+  const render = () => {
+    process.stdout.write('\x1B[2J\x1B[H');
+    renderStatus(showAll);
+  };
+  render();
+  const timer = setInterval(render, interval);
+  const stop = () => {
+    clearInterval(timer);
+    process.exit(0);
+  };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  await new Promise<void>(() => {
+    // Keep the process alive until a signal stops the watcher.
+  });
+}
+
+function parseStartArgs(args: string[]): {
+  noConsole: boolean;
+  consoleArgs: string[];
+  claudeArgs: string[];
+} {
+  const consoleArgs: string[] = [];
+  const claudeArgs: string[] = [];
+  let noConsole = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--no-console') {
+      noConsole = true;
+      continue;
+    }
+    if (arg === '--port') {
+      consoleArgs.push(arg, args[i + 1] ?? '');
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--port=')) {
+      consoleArgs.push(arg);
+      continue;
+    }
+    claudeArgs.push(arg);
+  }
+  return { noConsole, consoleArgs, claudeArgs };
+}
+
+async function start(args: string[]): Promise<never> {
+  const parsed = parseStartArgs(args);
+  if (!parsed.noConsole) {
+    const port = parsePortArgs(parsed.consoleArgs);
+    if (!Number.isInteger(port)) {
+      fail('usage: hugin start [--no-console] [--port <1-65535>]');
+    }
+    try {
+      const result = await ensureConsole({ root: ROOT, port });
+      if (result.started) {
+        console.log(`console: started ${result.url} (pid ${result.pid})`);
+      } else if (result.running) {
+        console.log(`console: already running ${result.url} (pid ${result.pid})`);
+      } else {
+        console.error(`console: not started — ${result.error ?? 'unknown error'}`);
+      }
+      console.log(`  log: ${path.relative(ROOT, path.join(HUGIN, 'logs', 'console.log'))}`);
+    } catch (error) {
+      console.error(`console: ${(error as Error).message}`);
+    }
+  }
+  exitWith(claude(parsed.claudeArgs));
+}
+
+async function consoleStatusCommand(args: string[]): Promise<void> {
+  const port = parsePortArgs(args);
+  const status = await inspectConsole({
+    root: ROOT,
+    port: Number.isInteger(port) ? port : DEFAULT_CONSOLE_PORT,
+  });
+  if (args.includes('--json')) {
+    process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+    return;
+  }
+  if (status.running) {
+    console.log(`console: running  pid=${status.pid}  ${status.url}`);
+  } else if (status.stale) {
+    console.log('console: stopped (removed stale pidfile)');
+  } else if (status.pid) {
+    console.log(`console: not responding  pid=${status.pid}  ${status.url}`);
+  } else {
+    console.log(`console: stopped  ${status.url}`);
+  }
+}
+
+function consoleStopCommand(): void {
+  const result = stopConsole({ root: ROOT });
+  console.log(result.stopped ? `console: stopped  pid=${result.pid}` : 'console: not running');
 }
 
 function memory(): void {
@@ -742,12 +931,20 @@ function doctor(quick: boolean): boolean {
 
 switch (cmd) {
   case 'start':
-    exitWith(claude(rest));
+    await start(rest);
     break;
   case 'dashboard':
     exitWith(claude(['agents', ...rest]));
     break;
   case 'console':
+    if (rest.includes('--status')) {
+      await consoleStatusCommand(rest);
+      break;
+    }
+    if (rest.includes('--stop')) {
+      consoleStopCommand();
+      break;
+    }
     exitWith(sh(process.execPath, [path.join(ROOT, 'bin', 'hugin-console.mjs'), ...rest]));
     break;
   case 'ps':
@@ -791,7 +988,20 @@ switch (cmd) {
     lang(rest[0]);
     break;
   case 'status':
-    status(rest.includes('--all'));
+    if (rest.includes('--json')) {
+      await statusJson(rest);
+      break;
+    }
+    if (rest.includes('--watch')) {
+      const rawInterval = flagValue(rest, '--interval');
+      const interval = rawInterval ? Number(rawInterval) : 5;
+      if (!Number.isFinite(interval) || interval <= 0) {
+        fail('usage: hugin status --watch [--interval <seconds>]');
+      }
+      await statusWatch(rest.includes('--all'), interval);
+      break;
+    }
+    renderStatus(rest.includes('--all'));
     break;
   case 'doctor':
     process.exit(doctor(rest.includes('--quick')) ? 0 : 1);

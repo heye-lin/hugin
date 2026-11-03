@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 const execFileAsync = promisify(execFile);
@@ -9,6 +9,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ROOT = process.env.HUGIN_ROOT
     ? path.resolve(process.env.HUGIN_ROOT)
     : path.resolve(HERE, '../..');
+export const DEFAULT_CONSOLE_PORT = 8787;
 const LENSES = ['correctness', 'security', 'tests'];
 function safeName(value) {
     return (typeof value === 'string' &&
@@ -226,6 +227,9 @@ function hydrateTask(task, runDir, workers) {
         title: cap(task?.title ?? task?.goal ?? task?.description ?? id, 500),
         owner: cap(task?.owner ?? '', 100),
         status: cap(task?.status ?? handoff?.status ?? 'unknown', 40),
+        // The board's own status, kept apart from the handoff fallback above so the
+        // summary can tell an explicit "complete" from "handoff complete, not verified".
+        boardStatus: cap(task?.status ?? '', 40),
         stage,
         worker: worker
             ? {
@@ -263,6 +267,64 @@ function hydrateTask(task, runDir, workers) {
         verdict,
         openFindings,
     };
+}
+function taskIsComplete(task) {
+    if (String(task?.boardStatus ?? task?.status ?? '') === 'complete')
+        return true;
+    return task?.handoff?.status === 'complete' && task?.verdict?.verdict === 'PASS';
+}
+function taskNeedsReview(task) {
+    if (String(task?.boardStatus ?? '') === 'review')
+        return true;
+    return task?.handoff?.status === 'complete' && task?.verdict?.verdict !== 'PASS';
+}
+/**
+ * Roll a run up into the five counts the terminal and the web console share.
+ * Worker counts are scoped to this run's session names (`hugin-<run>-…`);
+ * `queued` is board order, filtered to pending tasks whose deps are all complete.
+ */
+export function summarizeTasks(tasks, workers = [], runId = null) {
+    const prefix = runId ? `hugin-${runId}-` : 'hugin-';
+    const scoped = workers.filter((worker) => typeof worker?.name === 'string' && worker.name.startsWith(prefix));
+    const workerState = (worker) => String(worker?.state ?? worker?.status ?? '');
+    const counts = {
+        running: scoped.filter((worker) => workerState(worker) === 'working').length,
+        queued: 0,
+        review: 0,
+        blocked: scoped.filter((worker) => workerState(worker) === 'blocked').length,
+        complete: 0,
+    };
+    const byId = new Map();
+    for (const task of tasks)
+        byId.set(String(task?.id ?? ''), task);
+    const queue = [];
+    for (const task of tasks) {
+        if (taskIsComplete(task)) {
+            counts.complete += 1;
+            continue;
+        }
+        if (taskNeedsReview(task)) {
+            counts.review += 1;
+            continue;
+        }
+        if (String(task?.boardStatus ?? '') !== 'pending')
+            continue;
+        const deps = Array.isArray(task?.deps) ? task.deps.map((dep) => String(dep)) : [];
+        const ready = deps.every((dep) => {
+            const target = byId.get(dep);
+            return Boolean(target) && taskIsComplete(target);
+        });
+        if (!ready)
+            continue;
+        counts.queued += 1;
+        queue.push({
+            id: String(task?.id ?? ''),
+            title: String(task?.title ?? task?.id ?? ''),
+            owner: String(task?.owner ?? ''),
+            deps,
+        });
+    }
+    return { counts, queue };
 }
 function normalizeGate(runDir) {
     const data = readJson(path.join(runDir, 'reviews', 'gate.json'));
@@ -365,6 +427,7 @@ export function buildState({ root = DEFAULT_ROOT, runId, workers = [], workersEr
         }
     }
     const gate = runDir ? normalizeGate(runDir) : null;
+    const { counts: summary, queue } = summarizeTasks(tasks, workers, effective);
     return {
         generatedAt: new Date().toISOString(),
         repo: root,
@@ -381,6 +444,8 @@ export function buildState({ root = DEFAULT_ROOT, runId, workers = [], workersEr
         runNotes: runDir ? readText(path.join(runDir, 'memory.md'), 4000) : '',
         finalReport: runDir ? readText(path.join(runDir, 'final-report.md'), 6000) : '',
         tasks,
+        summary,
+        queue,
         attention: collectAttention(tasks, gate, workers, workersError),
         gate,
         reviewBoard: runDir ? normalizeReviewBoard(runDir) : null,
@@ -418,6 +483,161 @@ export async function readWorkers() {
             : cap(failure?.message ?? String(error), 500);
         return { workers: [], error: message };
     }
+}
+export function consolePidPath(root = DEFAULT_ROOT) {
+    return path.join(root, '.hugin', 'console.pid');
+}
+function readConsolePid(root = DEFAULT_ROOT) {
+    let data;
+    try {
+        data = JSON.parse(fs.readFileSync(consolePidPath(root), 'utf8'));
+    }
+    catch {
+        return null;
+    }
+    const pid = Number(data?.pid);
+    const port = Number(data?.port);
+    if (!Number.isInteger(pid) || pid <= 0)
+        return null;
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+        return null;
+    return {
+        pid,
+        port,
+        url: typeof data?.url === 'string' && data.url ? data.url : `http://127.0.0.1:${port}`,
+        startedAt: typeof data?.startedAt === 'string' ? data.startedAt : '',
+    };
+}
+export function writeConsolePid(root, info) {
+    const file = consolePidPath(root);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(info, null, 2)}\n`);
+}
+export function removeConsolePid(root = DEFAULT_ROOT) {
+    try {
+        fs.rmSync(consolePidPath(root));
+    }
+    catch {
+        // Already gone.
+    }
+}
+export function isProcessAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0)
+        return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (error) {
+        return error?.code === 'EPERM';
+    }
+}
+export async function checkConsoleHealth(port, timeoutMs = 800) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const done = (value) => {
+            if (settled)
+                return;
+            settled = true;
+            resolve(value);
+        };
+        const request = http.get({ host: '127.0.0.1', port, path: '/healthz', timeout: timeoutMs }, (response) => {
+            response.resume();
+            done(response.statusCode === 200);
+        });
+        request.on('timeout', () => {
+            request.destroy();
+            done(false);
+        });
+        request.on('error', () => done(false));
+    });
+}
+/**
+ * A console counts as running only when its pid is alive *and* `/healthz`
+ * answers. A pidfile whose process is gone is stale: it is removed so the next
+ * `hugin start` can launch a fresh server.
+ */
+export async function inspectConsole({ root = DEFAULT_ROOT, port = DEFAULT_CONSOLE_PORT, deps = {}, } = {}) {
+    const fallbackUrl = `http://127.0.0.1:${port}`;
+    const existed = fs.existsSync(consolePidPath(root));
+    const info = readConsolePid(root);
+    if (!info) {
+        if (existed)
+            removeConsolePid(root);
+        return { running: false, pid: null, port, url: fallbackUrl, stale: existed };
+    }
+    const alive = (deps.isAlive ?? isProcessAlive)(info.pid);
+    if (!alive) {
+        removeConsolePid(root);
+        return { running: false, pid: info.pid, port: info.port, url: info.url, stale: true };
+    }
+    const healthy = await (deps.health ?? checkConsoleHealth)(info.port);
+    return { running: healthy, pid: info.pid, port: info.port, url: info.url, stale: false };
+}
+function spawnConsoleServer(root, port) {
+    const entry = path.join(root, 'bin', 'hugin-console.mjs');
+    if (!fs.existsSync(entry))
+        return null;
+    const logFile = path.join(root, '.hugin', 'logs', 'console.log');
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const out = fs.openSync(logFile, 'a');
+    let child;
+    try {
+        child = spawn(process.execPath, [entry, '--port', String(port)], {
+            cwd: root,
+            detached: true,
+            stdio: ['ignore', out, out],
+            env: { ...process.env, HUGIN_ROOT: root },
+            windowsHide: true,
+        });
+    }
+    finally {
+        fs.closeSync(out);
+    }
+    child.unref();
+    return child.pid ?? null;
+}
+/**
+ * Start the console detached when it is not already healthy. Spawning is
+ * injectable so tests can exercise the pidfile rules without binding a port.
+ */
+export async function ensureConsole({ root = DEFAULT_ROOT, port = DEFAULT_CONSOLE_PORT, deps = {}, } = {}) {
+    const current = await inspectConsole({ root, port, deps });
+    if (current.running)
+        return { ...current, started: false };
+    const spawnFn = deps.spawn ?? ((spawnPort) => spawnConsoleServer(root, spawnPort));
+    const pid = spawnFn(port);
+    if (!pid) {
+        return {
+            ...current,
+            started: false,
+            error: `console launcher is missing at ${path.join(root, 'bin', 'hugin-console.mjs')}`,
+        };
+    }
+    const info = {
+        pid,
+        port,
+        url: `http://127.0.0.1:${port}`,
+        startedAt: new Date().toISOString(),
+    };
+    writeConsolePid(root, info);
+    return { running: true, pid, port, url: info.url, stale: false, started: true };
+}
+export function stopConsole({ root = DEFAULT_ROOT, deps = {}, } = {}) {
+    const info = readConsolePid(root);
+    if (!info)
+        return { stopped: false, pid: null };
+    const alive = (deps.isAlive ?? isProcessAlive)(info.pid);
+    if (alive) {
+        try {
+            (deps.terminate ?? ((pid) => process.kill(pid, 'SIGTERM')))(info.pid);
+        }
+        catch {
+            // The process may have exited between the check and the signal.
+        }
+    }
+    removeConsolePid(root);
+    return { stopped: alive, pid: info.pid };
 }
 const MIME = {
     '.html': 'text/html; charset=utf-8',

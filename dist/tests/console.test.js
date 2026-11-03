@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildState, listRuns, createConsoleServer } from '../lib/console.js';
+import { buildState, listRuns, createConsoleServer, consolePidPath, ensureConsole, inspectConsole, stopConsole, } from '../lib/console.js';
+function writeJson(file, value) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(value));
+}
 function makeFixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-console-'));
     const runDir = path.join(root, '.hugin', 'runs', 'testrun');
@@ -121,6 +125,8 @@ test('HTTP API serves state and blocks path traversal', async () => {
         const state = (await stateResponse.json());
         assert.equal(state.run.id, 'testrun');
         assert.equal(state.tasks[0].id, 'T1');
+        assert.deepEqual(state.summary, { running: 0, queued: 0, review: 0, blocked: 0, complete: 1 });
+        assert.ok(Array.isArray(state.queue), '/api/state exposes the ready queue');
         assert.equal(stateResponse.headers.get('cache-control'), 'no-store');
         const traversal = await fetch(`${base}/..%2f..%2fetc%2fpasswd`);
         assert.ok([403, 404].includes(traversal.status));
@@ -129,4 +135,87 @@ test('HTTP API serves state and blocks path traversal', async () => {
         await new Promise((resolve) => server.close(() => resolve()));
         fs.rmSync(root, { recursive: true, force: true });
     }
+});
+function makeSummaryFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-summary-'));
+    const runDir = path.join(root, '.hugin', 'runs', 'testrun');
+    fs.mkdirSync(path.join(runDir, 'reviews'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.hugin', 'memory'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.hugin', 'CURRENT_RUN'), 'testrun\n');
+    writeJson(path.join(runDir, 'run.json'), { run: 'testrun', status: 'active' });
+    fs.writeFileSync(path.join(runDir, 'brief.md'), 'summary fixture');
+    writeJson(path.join(runDir, 'board.json'), {
+        run: 'testrun',
+        tasks: [
+            { id: 'T1', title: 'done', owner: 'impl-1', status: 'complete', deps: [] },
+            { id: 'T2', title: 'verified handoff', owner: 'impl-2', status: 'dispatched', deps: [] },
+            { id: 'T3', title: 'awaiting review', owner: 'impl-3', status: 'review', deps: [] },
+            { id: 'T4', title: 'unverified handoff', owner: 'impl-4', status: 'dispatched', deps: [] },
+            { id: 'T5', title: 'ready', owner: 'impl-5', status: 'pending', deps: ['T1', 'T2'] },
+            { id: 'T6', title: 'waiting on review', owner: 'impl-6', status: 'pending', deps: ['T3'] },
+            { id: 'T7', title: 'waiting on queue', owner: 'impl-7', status: 'pending', deps: ['T5'] },
+        ],
+    });
+    writeJson(path.join(runDir, 'tasks', 'T2', 'handoff.json'), { status: 'complete' });
+    writeJson(path.join(runDir, 'tasks', 'T2', 'verdict.json'), { verdict: 'PASS' });
+    writeJson(path.join(runDir, 'tasks', 'T4', 'handoff.json'), { status: 'complete' });
+    return root;
+}
+test('buildState summary counts the run and queues ready work in board order', () => {
+    const root = makeSummaryFixture();
+    const workers = [
+        { id: 'w1', name: 'hugin-testrun-T5-impl', state: 'working' },
+        { id: 'w2', name: 'hugin-testrun-T6-impl', state: 'blocked' },
+        { id: 'w3', name: 'hugin-other-T1-impl', state: 'working' },
+    ];
+    const state = buildState({ root, workers });
+    assert.deepEqual(state.summary, { running: 1, queued: 1, review: 2, blocked: 1, complete: 2 });
+    assert.deepEqual(state.queue, [
+        { id: 'T5', title: 'ready', owner: 'impl-5', deps: ['T1', 'T2'] },
+    ]);
+    assert.equal(state.tasks.find((task) => task.id === 'T4').boardStatus, 'dispatched');
+    fs.rmSync(root, { recursive: true, force: true });
+});
+test('console pidfile prevents duplicate starts and clears a stale pid', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-pid-'));
+    const pidFile = consolePidPath(root);
+    writeJson(pidFile, { pid: 424242, port: 9999, url: 'http://127.0.0.1:9999', startedAt: 'x' });
+    const stale = await inspectConsole({ root, deps: { isAlive: () => false } });
+    assert.equal(stale.running, false);
+    assert.equal(stale.stale, true);
+    assert.ok(!fs.existsSync(pidFile), 'a stale pidfile is removed');
+    let spawns = 0;
+    const deps = {
+        isAlive: () => true,
+        health: () => true,
+        spawn: () => {
+            spawns += 1;
+            return 1234;
+        },
+    };
+    const first = await ensureConsole({ root, port: 8787, deps });
+    assert.equal(first.started, true);
+    assert.equal(first.running, true);
+    assert.equal(spawns, 1);
+    const stored = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
+    assert.equal(stored.pid, 1234);
+    assert.equal(stored.port, 8787);
+    const second = await ensureConsole({ root, port: 8787, deps });
+    assert.equal(second.started, false);
+    assert.equal(second.running, true);
+    assert.equal(spawns, 1, 'an alive console is not started twice');
+    let terminated = 0;
+    const stopped = stopConsole({
+        root,
+        deps: {
+            isAlive: () => true,
+            terminate: () => {
+                terminated += 1;
+            },
+        },
+    });
+    assert.equal(stopped.stopped, true);
+    assert.equal(terminated, 1);
+    assert.ok(!fs.existsSync(pidFile), 'stop removes the pidfile');
+    fs.rmSync(root, { recursive: true, force: true });
 });

@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +12,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ROOT = process.env.HUGIN_ROOT
   ? path.resolve(process.env.HUGIN_ROOT)
   : path.resolve(HERE, '../..');
+
+export const DEFAULT_CONSOLE_PORT = 8787;
 
 const LENSES = ['correctness', 'security', 'tests'];
 
@@ -27,6 +30,22 @@ export interface Stage {
   action: string;
 }
 
+/** Machine-readable roll-up shared by `hugin status --json` and `/api/state`. */
+export interface SummaryCounts {
+  running: number;
+  queued: number;
+  review: number;
+  blocked: number;
+  complete: number;
+}
+
+export interface QueueItem {
+  id: string;
+  title: string;
+  owner: string;
+  deps: string[];
+}
+
 export interface ConsoleState {
   generatedAt: string;
   repo: string;
@@ -36,11 +55,45 @@ export interface ConsoleState {
   runNotes: string;
   finalReport: string;
   tasks: any[];
+  summary: SummaryCounts;
+  queue: QueueItem[];
   attention: any[];
   gate: any;
   reviewBoard: any;
   reviewFiles: string[];
   memory: { index: string; lessons: string; decisions: string };
+}
+
+export interface ConsolePidInfo {
+  pid: number;
+  port: number;
+  url: string;
+  startedAt: string;
+}
+
+export interface ConsoleStatus {
+  running: boolean;
+  pid: number | null;
+  port: number;
+  url: string;
+  /** A pidfile existed but its process is gone; the file was removed. */
+  stale: boolean;
+}
+
+export interface ConsoleDeps {
+  isAlive?: (pid: number) => boolean;
+  health?: (port: number) => boolean | Promise<boolean>;
+  /** Injectable so tests can exercise stop logic without signalling a real pid. */
+  terminate?: (pid: number) => void;
+}
+
+export interface EnsureConsoleDeps extends ConsoleDeps {
+  spawn?: (port: number) => number | null;
+}
+
+export interface EnsureConsoleResult extends ConsoleStatus {
+  started: boolean;
+  error?: string;
 }
 
 function safeName(value: unknown): boolean {
@@ -292,6 +345,9 @@ function hydrateTask(task: any, runDir: string, workers: any[]): any {
     title: cap(task?.title ?? task?.goal ?? task?.description ?? id, 500),
     owner: cap(task?.owner ?? '', 100),
     status: cap(task?.status ?? handoff?.status ?? 'unknown', 40),
+    // The board's own status, kept apart from the handoff fallback above so the
+    // summary can tell an explicit "complete" from "handoff complete, not verified".
+    boardStatus: cap(task?.status ?? '', 40),
     stage,
     worker: worker
       ? {
@@ -329,6 +385,72 @@ function hydrateTask(task: any, runDir: string, workers: any[]): any {
     verdict,
     openFindings,
   };
+}
+
+function taskIsComplete(task: any): boolean {
+  if (String(task?.boardStatus ?? task?.status ?? '') === 'complete') return true;
+  return task?.handoff?.status === 'complete' && task?.verdict?.verdict === 'PASS';
+}
+
+function taskNeedsReview(task: any): boolean {
+  if (String(task?.boardStatus ?? '') === 'review') return true;
+  return task?.handoff?.status === 'complete' && task?.verdict?.verdict !== 'PASS';
+}
+
+/**
+ * Roll a run up into the five counts the terminal and the web console share.
+ * Worker counts are scoped to this run's session names (`hugin-<run>-…`);
+ * `queued` is board order, filtered to pending tasks whose deps are all complete.
+ */
+export function summarizeTasks(
+  tasks: any[],
+  workers: any[] = [],
+  runId: string | null = null,
+): { counts: SummaryCounts; queue: QueueItem[] } {
+  const prefix = runId ? `hugin-${runId}-` : 'hugin-';
+  const scoped = workers.filter(
+    (worker) => typeof worker?.name === 'string' && worker.name.startsWith(prefix),
+  );
+  const workerState = (worker: any) => String(worker?.state ?? worker?.status ?? '');
+
+  const counts: SummaryCounts = {
+    running: scoped.filter((worker) => workerState(worker) === 'working').length,
+    queued: 0,
+    review: 0,
+    blocked: scoped.filter((worker) => workerState(worker) === 'blocked').length,
+    complete: 0,
+  };
+
+  const byId = new Map<string, any>();
+  for (const task of tasks) byId.set(String(task?.id ?? ''), task);
+
+  const queue: QueueItem[] = [];
+  for (const task of tasks) {
+    if (taskIsComplete(task)) {
+      counts.complete += 1;
+      continue;
+    }
+    if (taskNeedsReview(task)) {
+      counts.review += 1;
+      continue;
+    }
+    if (String(task?.boardStatus ?? '') !== 'pending') continue;
+    const deps = Array.isArray(task?.deps) ? task.deps.map((dep: any) => String(dep)) : [];
+    const ready = deps.every((dep: string) => {
+      const target = byId.get(dep);
+      return Boolean(target) && taskIsComplete(target);
+    });
+    if (!ready) continue;
+    counts.queued += 1;
+    queue.push({
+      id: String(task?.id ?? ''),
+      title: String(task?.title ?? task?.id ?? ''),
+      owner: String(task?.owner ?? ''),
+      deps,
+    });
+  }
+
+  return { counts, queue };
 }
 
 function normalizeGate(runDir: string): any {
@@ -450,6 +572,8 @@ export function buildState({
 
   const gate = runDir ? normalizeGate(runDir) : null;
 
+  const { counts: summary, queue } = summarizeTasks(tasks, workers, effective);
+
   return {
     generatedAt: new Date().toISOString(),
     repo: root,
@@ -466,6 +590,8 @@ export function buildState({
     runNotes: runDir ? readText(path.join(runDir, 'memory.md'), 4000) : '',
     finalReport: runDir ? readText(path.join(runDir, 'final-report.md'), 6000) : '',
     tasks,
+    summary,
+    queue,
     attention: collectAttention(tasks, gate, workers, workersError),
     gate,
     reviewBoard: runDir ? normalizeReviewBoard(runDir) : null,
@@ -504,6 +630,174 @@ export async function readWorkers(): Promise<{ workers: any[]; error: string | n
         : cap(failure?.message ?? String(error), 500);
     return { workers: [], error: message };
   }
+}
+
+export function consolePidPath(root = DEFAULT_ROOT): string {
+  return path.join(root, '.hugin', 'console.pid');
+}
+
+function readConsolePid(root = DEFAULT_ROOT): ConsolePidInfo | null {
+  let data: any;
+  try {
+    data = JSON.parse(fs.readFileSync(consolePidPath(root), 'utf8'));
+  } catch {
+    return null;
+  }
+  const pid = Number(data?.pid);
+  const port = Number(data?.port);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return {
+    pid,
+    port,
+    url: typeof data?.url === 'string' && data.url ? data.url : `http://127.0.0.1:${port}`,
+    startedAt: typeof data?.startedAt === 'string' ? data.startedAt : '',
+  };
+}
+
+export function writeConsolePid(root: string, info: ConsolePidInfo): void {
+  const file = consolePidPath(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(info, null, 2)}\n`);
+}
+
+export function removeConsolePid(root = DEFAULT_ROOT): void {
+  try {
+    fs.rmSync(consolePidPath(root));
+  } catch {
+    // Already gone.
+  }
+}
+
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+export async function checkConsoleHealth(port: number, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const request = http.get(
+      { host: '127.0.0.1', port, path: '/healthz', timeout: timeoutMs },
+      (response) => {
+        response.resume();
+        done(response.statusCode === 200);
+      },
+    );
+    request.on('timeout', () => {
+      request.destroy();
+      done(false);
+    });
+    request.on('error', () => done(false));
+  });
+}
+
+/**
+ * A console counts as running only when its pid is alive *and* `/healthz`
+ * answers. A pidfile whose process is gone is stale: it is removed so the next
+ * `hugin start` can launch a fresh server.
+ */
+export async function inspectConsole({
+  root = DEFAULT_ROOT,
+  port = DEFAULT_CONSOLE_PORT,
+  deps = {},
+}: { root?: string; port?: number; deps?: ConsoleDeps } = {}): Promise<ConsoleStatus> {
+  const fallbackUrl = `http://127.0.0.1:${port}`;
+  const existed = fs.existsSync(consolePidPath(root));
+  const info = readConsolePid(root);
+  if (!info) {
+    if (existed) removeConsolePid(root);
+    return { running: false, pid: null, port, url: fallbackUrl, stale: existed };
+  }
+  const alive = (deps.isAlive ?? isProcessAlive)(info.pid);
+  if (!alive) {
+    removeConsolePid(root);
+    return { running: false, pid: info.pid, port: info.port, url: info.url, stale: true };
+  }
+  const healthy = await (deps.health ?? checkConsoleHealth)(info.port);
+  return { running: healthy, pid: info.pid, port: info.port, url: info.url, stale: false };
+}
+
+function spawnConsoleServer(root: string, port: number): number | null {
+  const entry = path.join(root, 'bin', 'hugin-console.mjs');
+  if (!fs.existsSync(entry)) return null;
+  const logFile = path.join(root, '.hugin', 'logs', 'console.log');
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const out = fs.openSync(logFile, 'a');
+  let child: ChildProcess;
+  try {
+    child = spawn(process.execPath, [entry, '--port', String(port)], {
+      cwd: root,
+      detached: true,
+      stdio: ['ignore', out, out],
+      env: { ...process.env, HUGIN_ROOT: root },
+      windowsHide: true,
+    });
+  } finally {
+    fs.closeSync(out);
+  }
+  child.unref();
+  return child.pid ?? null;
+}
+
+/**
+ * Start the console detached when it is not already healthy. Spawning is
+ * injectable so tests can exercise the pidfile rules without binding a port.
+ */
+export async function ensureConsole({
+  root = DEFAULT_ROOT,
+  port = DEFAULT_CONSOLE_PORT,
+  deps = {},
+}: { root?: string; port?: number; deps?: EnsureConsoleDeps } = {}): Promise<EnsureConsoleResult> {
+  const current = await inspectConsole({ root, port, deps });
+  if (current.running) return { ...current, started: false };
+
+  const spawnFn = deps.spawn ?? ((spawnPort: number) => spawnConsoleServer(root, spawnPort));
+  const pid = spawnFn(port);
+  if (!pid) {
+    return {
+      ...current,
+      started: false,
+      error: `console launcher is missing at ${path.join(root, 'bin', 'hugin-console.mjs')}`,
+    };
+  }
+
+  const info: ConsolePidInfo = {
+    pid,
+    port,
+    url: `http://127.0.0.1:${port}`,
+    startedAt: new Date().toISOString(),
+  };
+  writeConsolePid(root, info);
+  return { running: true, pid, port, url: info.url, stale: false, started: true };
+}
+
+export function stopConsole({
+  root = DEFAULT_ROOT,
+  deps = {},
+}: { root?: string; deps?: ConsoleDeps } = {}): { stopped: boolean; pid: number | null } {
+  const info = readConsolePid(root);
+  if (!info) return { stopped: false, pid: null };
+  const alive = (deps.isAlive ?? isProcessAlive)(info.pid);
+  if (alive) {
+    try {
+      (deps.terminate ?? ((pid: number) => process.kill(pid, 'SIGTERM')))(info.pid);
+    } catch {
+      // The process may have exited between the check and the signal.
+    }
+  }
+  removeConsolePid(root);
+  return { stopped: alive, pid: info.pid };
 }
 
 const MIME: Record<string, string> = {
