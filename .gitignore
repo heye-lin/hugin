@@ -1,0 +1,15 @@
+.hugin/runs/*
+!.hugin/runs/.gitkeep
+.hugin/CURRENT_RUN
+.hugin/hook-events.jsonl
+.hugin/phase0/
+.hugin/hooks.log
+.playwright-mcp/
+hugin-console-*.png
+.claude/settings.local.json
+.claude/worktrees/
+.omc/state/
+.omc/logs/
+.omc/handoffs/
+__pycache__/
+*.pyc

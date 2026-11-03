@@ -1,0 +1,20 @@
+{
+  "ultracode": false,
+  "enabledPlugins": {
+    "oh-my-claudecode@omc": false,
+    "superpowers@anthropic-plugin-directory": false,
+    "context7@anthropic-plugin-directory": false,
+    "claude-security@anthropic-plugin-directory": false,
+    "frontend-design@anthropic-plugin-directory": false,
+    "vectorlab-ui-ux-skills@anthropic-plugin-directory": false,
+    "code-review-anthropics@anthropic-plugin-directory": false
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"
+  },
+  "permissions": {
+    "deny": [
+      "Bash(git push *)"
+    ]
+  }
+}
