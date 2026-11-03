@@ -2,7 +2,6 @@ import path from 'node:path';
 import { readInput, taskDescription, field, logEvent, fail, ok, repoRoot, } from './lib.js';
 const input = await readInput();
 const cwd = input.cwd || process.cwd();
-const origin = { session_id: input.session_id ?? null, cwd };
 const subject = input.task_subject ?? input.task?.subject ?? '(untitled)';
 const description = taskDescription(input);
 const ac = field(description, 'AC');
@@ -17,7 +16,6 @@ if (!owner)
     missing.push('Owner:');
 if (missing.length > 0) {
     logEvent(cwd, 'TaskCreated', {
-        ...origin,
         result: 'blocked',
         task: input.task_id,
         subject,
@@ -47,7 +45,6 @@ if (evidence) {
     const inside = absolute === runsRoot || absolute.startsWith(`${runsRoot}${path.sep}`);
     if (!inside) {
         logEvent(cwd, 'TaskCreated', {
-            ...origin,
             result: 'blocked',
             task: input.task_id,
             subject,
@@ -58,7 +55,6 @@ if (evidence) {
     }
 }
 logEvent(cwd, 'TaskCreated', {
-    ...origin,
     result: 'allowed',
     task: input.task_id,
     subject,

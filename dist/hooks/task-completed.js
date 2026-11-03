@@ -3,13 +3,11 @@ import path from 'node:path';
 import { readInput, taskDescription, field, logEvent, currentRunId, repoRoot, fail, ok, isYes, } from './lib.js';
 const input = await readInput();
 const cwd = input.cwd || process.cwd();
-const origin = { session_id: input.session_id ?? null, cwd };
 const subject = input.task_subject ?? input.task?.subject ?? '(untitled)';
 const description = taskDescription(input);
 const evidence = field(description, 'Evidence');
 if (isYes(process.env.HUGIN_SKIP_EVIDENCE)) {
     logEvent(cwd, 'TaskCompleted', {
-        ...origin,
         result: 'skipped',
         task: input.task_id,
         subject,
@@ -20,7 +18,6 @@ if (isYes(process.env.HUGIN_SKIP_EVIDENCE)) {
 if (!currentRunId(cwd)) {
     // Setup / non-Hugin work should not be blocked before a run exists.
     logEvent(cwd, 'TaskCompleted', {
-        ...origin,
         result: 'allowed',
         task: input.task_id,
         subject,
@@ -30,7 +27,6 @@ if (!currentRunId(cwd)) {
 }
 if (!evidence) {
     logEvent(cwd, 'TaskCompleted', {
-        ...origin,
         result: 'blocked',
         task: input.task_id,
         subject,
@@ -45,7 +41,6 @@ const absolute = path.isAbsolute(evidence)
 const runsRoot = path.resolve(root, '.hugin', 'runs');
 if (absolute !== runsRoot && !absolute.startsWith(`${runsRoot}${path.sep}`)) {
     logEvent(cwd, 'TaskCompleted', {
-        ...origin,
         result: 'blocked',
         task: input.task_id,
         subject,
@@ -60,7 +55,6 @@ try {
 }
 catch {
     logEvent(cwd, 'TaskCompleted', {
-        ...origin,
         result: 'blocked',
         task: input.task_id,
         subject,
@@ -75,7 +69,6 @@ catch {
 }
 if (handoff?.status !== 'complete') {
     logEvent(cwd, 'TaskCompleted', {
-        ...origin,
         result: 'blocked',
         task: input.task_id,
         subject,
@@ -89,7 +82,6 @@ if (handoff?.status !== 'complete') {
     ].join('\n'));
 }
 logEvent(cwd, 'TaskCompleted', {
-    ...origin,
     result: 'allowed',
     task: input.task_id,
     subject,

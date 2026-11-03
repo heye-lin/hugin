@@ -83,14 +83,30 @@ export function runDir(cwd) {
     const id = currentRunId(cwd);
     return id ? path.join(repoRoot(cwd), '.hugin', 'runs', id) : '';
 }
+/**
+ * cwd as written to hook logs. Absolute paths carry usernames and machine
+ * layout into a file that is committed with the run, so only the path relative
+ * to the repository is kept.
+ */
+export function relativeCwd(cwd) {
+    const root = path.resolve(repoRoot(cwd));
+    const relative = path.relative(root, path.resolve(cwd));
+    return relative === '' ? '.' : relative;
+}
 export function logEvent(cwd, event, detail) {
+    const root = repoRoot(cwd);
     const dir = runDir(cwd);
     const target = dir
         ? path.join(dir, 'hooks.log')
-        : path.join(repoRoot(cwd), '.hugin', 'hooks.log');
+        : path.join(root, '.hugin', 'hooks.log');
+    // Session ids and absolute paths are host details; drop them if a caller
+    // still passes them, and record the repository-relative cwd instead.
+    const rest = { ...(detail ?? {}) };
+    delete rest.session_id;
+    delete rest.cwd;
     try {
         fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.appendFileSync(target, `${JSON.stringify({ at: new Date().toISOString(), event, ...detail })}\n`);
+        fs.appendFileSync(target, `${JSON.stringify({ at: new Date().toISOString(), event, cwd: relativeCwd(cwd), ...rest })}\n`);
     }
     catch {
         // Logging must never be the reason a session fails.

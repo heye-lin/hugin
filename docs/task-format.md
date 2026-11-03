@@ -83,7 +83,7 @@ Deps: T0 | none
    ./bin/hugin work <run> <task> [--base <sha>] [--branch <name>]
    ```
 
-   默认路径 `.claude/worktrees/<run>-<task>`，默认分支 `hugin/<task>`。命令会先清理无法在本平台使用的陈旧 worktree（例如 WSL 创建、记录 `/mnt/...` gitdir 的目录），并把绝对路径写进 `.hugin/runs/<run>/tasks/<task>/worktree.txt`。
+   默认路径 `.claude/worktrees/<run>-<task>`，默认分支 `hugin/<task>`。命令会先清理无法在本平台使用的陈旧 worktree（例如 WSL 创建、记录 `/mnt/...` gitdir 的目录），并把绝对路径写进 `.hugin/runs/<run>/tasks/<task>/worktree.txt`。清理只把目录改名移开，不删除内容；`git worktree prune` 会先跑 `--dry-run`，只有本次目录（或改名后的 `.stale-*` 路径）出现在候选里才真正执行，避免误删其他平台仍在用的注册。用 `--branch` 复用已有 worktree 时，分支必须与 worktree 当前分支一致，否则命令失败；`--base` / `--branch` 缺值同样直接失败。
 
 2. 在该 worktree 目录内启动 worker。worker 把 handoff 写到 **worktree 内**的 `.hugin/runs/<run>/tasks/<task>/handoff.json`。
 
@@ -93,7 +93,37 @@ Deps: T0 | none
    ./bin/hugin collect <run> <task>
    ```
 
-   它只把 `tasks/<task>/handoff.json`（以及 handoff 里 `commands_run[].log` 引用的 `.hugin/runs/<run>/logs/` 文件）从 worktree 复制到主仓库的 `.hugin/runs/<run>/`，然后校验 handoff：`branch` 必须存在，`status` 不是 `complete` 时退出码为 1。
+   它只把 `tasks/<task>/handoff.json` 和 handoff 里 `commands_run[].log` 引用的 `.hugin/runs/<run>/logs/` 文件从 worktree 复制到主仓库的 `.hugin/runs/<run>/`，然后校验：
+
+   - `branch` 声明时必须存在；
+   - `status=complete` 时，`run` / `task` 必须与命令参数一致，`ac` 必须是非空数组；
+   - 声明了 `head`（或 `commit`）时必须是当前 worktree 的 HEAD（允许 7 位以上短 SHA），否则退出码 1；两者都未声明时只告警；
+   - `status` 不是 `complete` 时退出码为 1。
+
+   日志规则：
+
+   - 只导入 `.hugin/runs/<run>/logs/` 下的普通文件，符号链接、目录一律跳过；
+   - 文件名必须以 `<task>-` 开头；跨任务日志不会导入；
+   - 文件名不得以 `-` 或 `.` 开头，也不能包含目录分隔符；
+   - 缺失、空文件、超过 5 MB 的日志跳过并告警；
+   - 目标文件已存在且内容不同时不覆盖，只告警；
+   - 源文件与目标目录都做 realpath 校验，越界即跳过。
+
+   成功后写 `tasks/<task>/collected.json`，记录这次收集的元数据：
+
+   ```json
+   {
+     "run": "20261103-fix-divide",
+     "task": "T1",
+     "branch": "hugin/T1",
+     "head": "def5678...",
+     "handoff_created_at": "2026-11-03T12:00:00Z",
+     "collected_at": "2026-11-03T12:05:00.000Z",
+     "logs": [".hugin/runs/20261103-fix-divide/logs/T1-test.txt"]
+   }
+   ```
+
+   `branch` / `head` 取自 worktree 实际状态，`logs` 是实际复制成功的引用列表。
 
    它**不**回收 `reviews/` 与 `verdict.json`：实现者能写 worktree，回收会让它伪造审查结论。这两个文件由 Master 从 reviewer/verifier 的最终消息落盘。
 
@@ -217,6 +247,8 @@ lens 分工：
 | verdict | `.hugin/runs/<run>/reviews/<task>-verdict.json` | — |
 
 role 取值：`impl`、`review-correctness`、`review-security`、`review-tests`、`verify`。
+
+`hugin new-run <id>` 要求 id 匹配 `[A-Za-z0-9][A-Za-z0-9._-]*` 且不含 `..`；非法 id 退出码 1，不会创建目录。
 
 ## 6. 目录布局
 

@@ -121,6 +121,21 @@ function flagValue(args, name) {
     const index = args.indexOf(name);
     return index === -1 ? '' : (args[index + 1] ?? '');
 }
+/**
+ * Read `--name value` or `--name=value`. A flag with no value is reported as
+ * given-but-empty so callers can fail instead of silently falling back to a
+ * default that hides the user's typo.
+ */
+function optionValue(args, name) {
+    const inline = args.find((arg) => arg.startsWith(`${name}=`));
+    if (inline !== undefined)
+        return { given: true, value: inline.slice(name.length + 1) };
+    const index = args.indexOf(name);
+    if (index === -1)
+        return { given: false, value: '' };
+    const next = args[index + 1];
+    return { given: true, value: next && !next.startsWith('--') ? next : '' };
+}
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function requireSafeRunTask(run, task) {
     const pairs = [
@@ -133,9 +148,19 @@ function requireSafeRunTask(run, task) {
         }
     }
 }
+/**
+ * Path containment check. Windows paths are case-insensitive, so a recorded
+ * path that differs only in case still points inside the directory; on other
+ * platforms the same difference is a different path.
+ */
 function inside(base, target) {
     const root = path.resolve(base);
     const candidate = path.resolve(target);
+    if (isWin) {
+        const lowerRoot = root.toLowerCase();
+        const lowerCandidate = candidate.toLowerCase();
+        return lowerCandidate === lowerRoot || lowerCandidate.startsWith(`${lowerRoot}${path.sep}`);
+    }
     return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 function samePath(a, b) {
@@ -185,10 +210,28 @@ function pruneStaleWorktree(dir) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const parked = `${dir}.stale-${stamp}`;
     fs.renameSync(dir, parked);
-    // `git worktree prune` has no per-path form. It only drops admin entries whose
-    // worktree directory is gone or whose gitdir link is broken; it never deletes
-    // files, so another platform's registrations can be re-added harmlessly.
-    capture('git', ['worktree', 'prune']);
+    // `git worktree prune` is global: it drops the admin entry of every worktree
+    // whose directory is gone, including registrations that another platform can
+    // still use. Ask git for the candidates first and prune only when this
+    // checkout (or the parked copy) is among them; otherwise the entry belongs to
+    // a worktree that is merely unreachable from here and must be left alone.
+    const dryRun = capture('git', ['worktree', 'prune', '--dry-run', '--verbose']);
+    const candidates = `${dryRun.stdout ?? ''}${dryRun.stderr ?? ''}`;
+    const haystack = isWin ? candidates.toLowerCase() : candidates;
+    // Dry-run names candidates by their admin id (usually the worktree directory
+    // basename), so match the basename as a whole token: `r1-T1` must not match
+    // the different worktree `r1-T10`.
+    const basename = isWin ? path.basename(dir).toLowerCase() : path.basename(dir);
+    const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const idPattern = new RegExp(`(^|[\\s/\\\\])${escaped}(?=[:\\s]|$)`);
+    const touchesThisCheckout = [dir, parked].some((target) => haystack.includes(isWin ? target.toLowerCase() : target)) ||
+        idPattern.test(haystack);
+    if (touchesThisCheckout) {
+        capture('git', ['worktree', 'prune']);
+    }
+    else {
+        console.error('kept the git worktree registry: this checkout is not a prune candidate');
+    }
     console.error(`moved unusable worktree aside: ${parked}`);
     console.error('  inspect it before deleting; its .git link points at another platform');
     return true;
@@ -198,8 +241,16 @@ function work(run, task, args) {
         fail('usage: hugin work <run> <task> [--base <sha>] [--branch <name>]');
     requireSafeRunTask(run, task);
     const meta = readJson(path.join(RUNS, run, 'run.json'));
-    const base = flagValue(args, '--base') || meta?.base || 'HEAD';
-    const branch = flagValue(args, '--branch') || `hugin/${task}`;
+    const baseOption = optionValue(args, '--base');
+    const branchOption = optionValue(args, '--branch');
+    if (baseOption.given && !baseOption.value) {
+        fail('hugin work: --base requires a commit');
+    }
+    if (branchOption.given && !branchOption.value) {
+        fail('hugin work: --branch requires a branch name');
+    }
+    const base = baseOption.value || meta?.base || 'HEAD';
+    const branch = branchOption.value || `hugin/${task}`;
     if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) || branch.includes('..')) {
         fail(`invalid branch: ${JSON.stringify(branch)}`);
     }
@@ -211,16 +262,22 @@ function work(run, task, args) {
         console.error(`pruned stale worktree: ${dir}`);
     }
     if (isWorktree(dir)) {
+        const currentBranch = requireOk(capture('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']), 'git branch').trim();
+        // Reusing a worktree is fine, but silently ignoring an explicit --branch
+        // would let a caller believe it was placed on the branch it asked for.
+        if (branchOption.given && currentBranch !== branchOption.value) {
+            fail(`--branch ${branchOption.value} does not match the existing worktree branch ${currentBranch} (${dir})`);
+        }
         write(pointer, `${dir}\n`);
         console.log(dir);
-        console.log(`branch: ${requireOk(capture('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']), 'git branch').trim()}`);
+        console.log(`branch: ${currentBranch}`);
         const current = requireOk(capture('git', ['-C', dir, 'rev-parse', 'HEAD']), 'git head').trim();
         console.log(`head:   ${current.slice(0, 7)}`);
         console.log('(reused existing worktree)');
-        if (flagValue(args, '--base')) {
-            const wanted = capture('git', ['rev-parse', '--verify', `${flagValue(args, '--base')}^{commit}`]);
+        if (baseOption.given) {
+            const wanted = capture('git', ['rev-parse', '--verify', `${baseOption.value}^{commit}`]);
             if (wanted.status === 0 && wanted.stdout.trim() !== current) {
-                console.error(`warning: existing worktree is at ${current.slice(0, 7)}, not --base ${flagValue(args, '--base')}`);
+                console.error(`warning: existing worktree is at ${current.slice(0, 7)}, not --base ${baseOption.value}`);
             }
         }
         return;
@@ -246,6 +303,7 @@ function work(run, task, args) {
         console.error(`warning: branch ${branch} is at ${headSha.slice(0, 7)}, not the requested base ${base} (${sha.slice(0, 7)})`);
     }
 }
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
 /**
  * Copy the worker's handoff out of its worktree. Reviews and verdicts are NOT
  * collected: the implementer can write inside its worktree, so importing them
@@ -281,6 +339,12 @@ function collect(run, task) {
     catch {
         fail(`handoff is not valid JSON: ${from}`);
     }
+    const headProbe = capture('git', ['-C', worktree, 'rev-parse', 'HEAD']);
+    if (headProbe.status !== 0) {
+        fail(`could not read the worktree HEAD: ${(headProbe.stderr || headProbe.stdout || '').trim()}`);
+    }
+    const head = headProbe.stdout.trim();
+    const branchProbe = capture('git', ['-C', worktree, 'rev-parse', '--abbrev-ref', 'HEAD']);
     const branch = typeof handoff.branch === 'string' ? handoff.branch.trim() : '';
     if (branch) {
         const exists = capture('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
@@ -291,17 +355,55 @@ function collect(run, task) {
     if (declared && !samePath(declared, worktree)) {
         console.error(`warning: handoff.worktree (${declared}) differs from the worktree on disk (${worktree})`);
     }
+    const complete = handoff.status === 'complete';
+    if (complete) {
+        // A handoff is evidence for one task in one run; a mismatch means the
+        // worker wrote (or copied) the wrong file and must not pass silently.
+        if (handoff.run !== run) {
+            fail(`handoff.run is ${JSON.stringify(handoff.run)}, expected ${JSON.stringify(run)}: ${from}`);
+        }
+        if (handoff.task !== task) {
+            fail(`handoff.task is ${JSON.stringify(handoff.task)}, expected ${JSON.stringify(task)}: ${from}`);
+        }
+        if (!Array.isArray(handoff.ac) || handoff.ac.length === 0) {
+            fail(`handoff.ac must be a non-empty array of acceptance criteria: ${from}`);
+        }
+        const declaredHead = [handoff.head, handoff.commit]
+            .map((value) => (typeof value === 'string' ? value.trim() : ''))
+            .find((value) => value !== '');
+        if (declaredHead) {
+            const expected = declaredHead.toLowerCase();
+            const actual = head.toLowerCase();
+            const matches = actual === expected || (expected.length >= 7 && actual.startsWith(expected));
+            if (!matches) {
+                fail(`handoff declares ${declaredHead}, but the worktree HEAD is ${head}. Run 'hugin checkpoint' first or refresh the handoff.`);
+            }
+        }
+        else {
+            console.error('warning: handoff declares no head/commit; freshness cannot be checked');
+        }
+    }
     write(to, text);
-    const copied = [relative];
     console.log(`collected 1 file into .hugin/runs/${run}:`);
     console.log(`  ${relative}`);
     const logs = [];
+    const logsPrefix = `.hugin/runs/${run}/logs/`;
+    const runsReal = fs.realpathSync(RUNS);
+    const worktreeReal = fs.realpathSync(worktree);
     for (const entry of Array.isArray(handoff.commands_run) ? handoff.commands_run : []) {
         const ref = typeof entry?.log === 'string' ? entry.log.trim().replace(/\\/g, '/') : '';
-        if (!ref || !ref.startsWith(`.hugin/runs/${run}/logs/`))
+        if (!ref || !ref.startsWith(logsPrefix))
             continue;
-        if (!/^[A-Za-z0-9._-]+$/.test(ref.slice(`.hugin/runs/${run}/logs/`.length)))
+        const name = ref.slice(logsPrefix.length);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+            console.error(`warning: log name must not start with '-' or '.' and cannot contain directories: ${ref}`);
             continue;
+        }
+        // Logs are per task; importing another task's log would mix evidence.
+        if (!name.startsWith(`${task}-`)) {
+            console.error(`warning: log belongs to another task, not imported: ${ref}`);
+            continue;
+        }
         const logFrom = path.join(worktree, ref);
         const logTo = path.join(ROOT, ref);
         if (!inside(RUNS, logTo)) {
@@ -324,15 +426,46 @@ function collect(run, task) {
             console.error(`warning: referenced log is empty: ${ref}`);
             continue;
         }
+        if (logStat.size > MAX_LOG_BYTES) {
+            console.error(`warning: referenced log is larger than 5 MB: ${ref}`);
+            continue;
+        }
+        const fromReal = fs.realpathSync(logFrom);
+        if (!inside(worktreeReal, fromReal)) {
+            console.error(`warning: referenced log escapes the worktree: ${ref}`);
+            continue;
+        }
+        const targetDir = path.dirname(logTo);
+        fs.mkdirSync(targetDir, { recursive: true });
+        if (!inside(runsReal, fs.realpathSync(targetDir))) {
+            console.error(`warning: log target escapes .hugin/runs: ${ref}`);
+            continue;
+        }
+        if (fs.existsSync(logTo)) {
+            if (!fs.readFileSync(logTo).equals(fs.readFileSync(logFrom))) {
+                console.error(`warning: log already exists with different content, not overwriting: ${ref}`);
+                continue;
+            }
+        }
         write(logTo, fs.readFileSync(logFrom, 'utf8'));
         logs.push(ref);
     }
     for (const ref of logs)
         console.log(`  ${ref}`);
-    if (handoff.status !== 'complete') {
+    if (!complete) {
         console.error(`handoff status: ${handoff.status ?? '(missing)'} — TaskCompleted will block.`);
         process.exit(1);
     }
+    const collected = {
+        run,
+        task,
+        branch: branchProbe.status === 0 ? branchProbe.stdout.trim() : branch,
+        head,
+        handoff_created_at: typeof handoff.created_at === 'string' ? handoff.created_at : null,
+        collected_at: new Date().toISOString(),
+        logs,
+    };
+    write(path.join(RUNS, run, 'tasks', task, 'collected.json'), `${JSON.stringify(collected, null, 2)}\n`);
     const criteria = Array.isArray(handoff.ac) ? handoff.ac.length : 0;
     const changed = Array.isArray(handoff.files_changed) ? handoff.files_changed.length : 0;
     console.log(`handoff: status=complete ac=${criteria} files_changed=${changed}`);
@@ -427,7 +560,7 @@ Usage:
   hugin stop <id|name>        Stop a background session
   hugin new-run [run-id]      Create .hugin/runs/<run-id> and set CURRENT_RUN
   hugin work <run> <task>     Create or reuse the task's isolated worktree
-  hugin collect <run> <task>  Copy handoff/review/verdict out of that worktree
+  hugin collect <run> <task>  Copy the task handoff and its referenced logs out of the worktree
   hugin checkpoint <run> <task> [--note <text>] [--no-push]
                               Commit and tag the task worktree, record the run ledger
   hugin checkpoints <run> [--json]
@@ -483,6 +616,11 @@ function stamp() {
 }
 function newRun(id) {
     const run = id || stamp();
+    // The id becomes a directory name under .hugin/runs; reject anything that can
+    // escape it instead of silently creating a run elsewhere.
+    if (!SAFE_NAME.test(run) || run.includes('..')) {
+        fail(`invalid run id: ${JSON.stringify(run)} (allowed: letters, digits, dot, underscore, dash; no '..')`);
+    }
     const dir = path.join(RUNS, run);
     fs.mkdirSync(path.join(dir, 'tasks'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'reviews'), { recursive: true });
