@@ -153,6 +153,8 @@ Hook 合成 stdin 测试：7/7 通过（缺 AC、合法任务、越界 Evidence�
 
 `SessionStart`：输出 1200 字符，包含 `MEMTEST_BRIEF` 与 `T1 [pending]`；在临时 worktree 中运行时 `repo: /mnt/d/code/Hugin`，证明 `--git-common-dir` 解析正确。
 
+真实触发：2026-11-04 本会话 compact 时，hook 注入了 `Hugin memory (injected at session start)`，内容包含 `repo: D:\code\Hugin`、demo run 的 brief、board 与 lessons（1200 字符截断）。这证明 `SessionStart` 在非合成 stdin 的真实会话中生效。
+
 ### 10.2 Console
 
 `node --test tests/console.test.mjs`：5/5 通过。
@@ -182,7 +184,7 @@ Content-Security-Policy: default-src 'self'; ...
 
 ### 10.4 仍未验证
 
-- 项目 workspace trust：`claude --bg` 在本目录仍会被拒绝，必须由人手动接受一次。
+- 项目 workspace trust：2026-11-04 再次实测，`claude --bg` 返回 `not trusted. Run claude in /mnt/d/code/Hugin once and accept the trust prompt, then retry.` 必须由人手动接受一次。
 - 带 `worker-settings.json` 的真实后台 worker。
 - 真实 `TaskCreated` / `TaskCompleted` 事件（目前只有合成 stdin）。
 - `/review-board`、`/pre-merge-gate` 运行时行为。

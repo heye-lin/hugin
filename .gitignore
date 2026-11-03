@@ -8,8 +8,8 @@
 hugin-console-*.png
 .claude/settings.local.json
 .claude/worktrees/
-.omc/state/
-.omc/logs/
-.omc/handoffs/
+.omc/*
+!.omc/skills/
+!.omc/skills/**
 __pycache__/
 *.pyc
