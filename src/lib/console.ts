@@ -838,7 +838,12 @@ function serveStatic(
   res: ServerResponse,
   method: string | undefined,
 ): void {
-  const webRoot = path.join(root, 'web');
+  // The Vite build lands in `web/dist`; fall back to `web/` so the console still
+  // serves something before the first `npm run build`.
+  const builtRoot = path.join(root, 'web', 'dist');
+  const webRoot = fs.existsSync(path.join(builtRoot, 'index.html'))
+    ? builtRoot
+    : path.join(root, 'web');
   let decoded: string;
   try {
     decoded = decodeURIComponent(pathname);
@@ -866,7 +871,8 @@ function serveStatic(
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
     'Content-Security-Policy':
-      "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'",
+      // antd 5 injects runtime <style> tags (CSS-in-JS), so styles need 'unsafe-inline'.
+      "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'",
   };
   res.writeHead(200, headers);
   res.end(method === 'HEAD' ? undefined : body);

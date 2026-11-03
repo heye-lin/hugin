@@ -174,6 +174,55 @@ test('HTTP API serves state and blocks path traversal', async () => {
   }
 });
 
+test('console serves web/dist and allows inline styles for antd', async () => {
+  const root = makeFixture();
+  const built = path.join(root, 'web', 'dist');
+  fs.mkdirSync(path.join(built, 'assets'), { recursive: true });
+  fs.writeFileSync(path.join(built, 'index.html'), '<!doctype html><div id="root">built</div>');
+  fs.writeFileSync(path.join(built, 'assets', 'app.js'), 'console.log("built");');
+  // A stale source index must not win once the build exists.
+  fs.mkdirSync(path.join(root, 'web'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'web', 'index.html'), '<!doctype html><div id="root">source</div>');
+
+  const server = createConsoleServer({ root });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const index = await fetch(`${base}/`);
+    assert.equal(index.status, 200);
+    assert.match(await index.text(), /built/);
+    const csp = index.headers.get('content-security-policy') ?? '';
+    assert.match(csp, /style-src 'self' 'unsafe-inline'/);
+
+    const asset = await fetch(`${base}/assets/app.js`);
+    assert.equal(asset.status, 200);
+    assert.match(asset.headers.get('content-type') ?? '', /text\/javascript/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('console falls back to web/ when web/dist is missing', async () => {
+  const root = makeFixture();
+  fs.mkdirSync(path.join(root, 'web'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'web', 'index.html'), '<!doctype html><div id="root">source</div>');
+
+  const server = createConsoleServer({ root });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const index = await fetch(`${base}/`);
+    assert.equal(index.status, 200);
+    assert.match(await index.text(), /source/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function makeSummaryFixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-summary-'));
   const runDir = path.join(root, '.hugin', 'runs', 'testrun');

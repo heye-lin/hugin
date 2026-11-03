@@ -880,10 +880,13 @@ function doctor(quick: boolean): boolean {
   }
 
   runCheck('console: web assets', () => {
-    for (const file of ['web/index.html', 'web/app.css', 'web/app.js']) {
-      fs.accessSync(path.join(ROOT, file), fs.constants.R_OK);
-    }
-    return 'index.html, app.css, app.js';
+    // The Vite build lives in `web/dist`; fall back to `web/` before the first build.
+    const builtIndex = path.join(ROOT, 'web', 'dist', 'index.html');
+    const sourceIndex = path.join(ROOT, 'web', 'index.html');
+    const used = fs.existsSync(builtIndex) ? builtIndex : fs.existsSync(sourceIndex) ? sourceIndex : null;
+    if (!used) throw new Error('missing web/dist/index.html and web/index.html');
+    fs.accessSync(used, fs.constants.R_OK);
+    return path.relative(ROOT, used).replace(/\\/g, '/');
   });
 
   runCheck('.hugin/runs writable', () => {
