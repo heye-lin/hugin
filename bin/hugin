@@ -20,7 +20,7 @@ Usage:
   hugin memory                Show the project memory index and recent lessons
   hugin remember <text>       Append a dated lesson to .hugin/memory/lessons.md
   hugin recall <query>        Search .hugin/memory and run evidence
-  hugin status                Show current run and Hugin background sessions
+  hugin status [--all]        Show current run and Hugin background sessions
   hugin doctor [--quick]      Check the environment (no mutating actions)
   hugin help                  Show this help
 EOF
@@ -37,6 +37,12 @@ new_run() {
   local run="${1:-$(date +%Y%m%d-%H%M%S)}"
   local dir="$ROOT/.hugin/runs/$run"
   mkdir -p "$dir/tasks" "$dir/reviews" "$dir/logs"
+  if [ -f "$dir/run.json" ]; then
+    printf '%s\n' "$run" >"$ROOT/.hugin/CURRENT_RUN"
+    echo "run already exists: $run (reused)" >&2
+    echo "$run"
+    return 0
+  fi
   local base
   base="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
   cat >"$dir/run.json" <<EOF
@@ -47,20 +53,58 @@ EOF
 }
 
 status() {
+  local all=0
+  [ "${1:-}" = "--all" ] && all=1
   local run=""
   [ -f "$ROOT/.hugin/CURRENT_RUN" ] && run="$(cat "$ROOT/.hugin/CURRENT_RUN")"
   echo "repo: $ROOT"
+  if command -v wslpath >/dev/null 2>&1; then
+    local winpath
+    winpath="$(wslpath -w "$ROOT" 2>/dev/null || true)"
+    [ -n "$winpath" ] && echo "win:  $winpath"
+  fi
   echo "run:  ${run:-<none>}"
-  if [ -n "$run" ] && [ -f "$ROOT/.hugin/runs/$run/run.json" ]; then
-    cat "$ROOT/.hugin/runs/$run/run.json"
+
+  local runjson="$ROOT/.hugin/runs/$run/run.json"
+  if [ -n "$run" ] && [ -f "$runjson" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -r '"      \(.status // "unknown")  base=\(.base // "-")  created=\(.created_at // "-")"' "$runjson" 2>/dev/null || true
+    else
+      cat "$runjson"
+    fi
+  fi
+
+  local board="$ROOT/.hugin/runs/$run/board.json"
+  if [ -n "$run" ] && [ -f "$board" ] && command -v jq >/dev/null 2>&1; then
+    jq -r 'if ((.tasks // []) | length) == 0 then "tasks: none"
+      else "tasks: \(.tasks | length) total — " + ([.tasks[] | .status // "unknown"] | group_by(.) | map("\(.[0])=\(length)") | join(", "))
+      end' "$board" 2>/dev/null || true
   fi
   echo
+
   if command -v claude >/dev/null 2>&1; then
-    echo "background sessions:"
+    local label="active"
+    [ "$all" -eq 1 ] && label="all"
+    echo "background sessions ($label):"
     if command -v jq >/dev/null 2>&1; then
-      claude agents --json --all 2>/dev/null \
-        | jq -r '.[] | select(.name? // "" | startswith("hugin-")) | [.id // "-", .state // .status // "-", .name // "-", .waitingFor // "-"] | @tsv' \
-        || true
+      local data rows hidden
+      data="$(claude agents --json --all 2>/dev/null || true)"
+      rows="$(printf '%s' "$data" | jq -r --argjson all "$all" '
+        .[] | select(.name? // "" | startswith("hugin-"))
+        | select($all == 1 or ((.state // .status // "") != "stopped"))
+        | [.id // "-", .state // .status // "-", .name // "-", .waitingFor // "-"] | @tsv' 2>/dev/null \
+        | awk -F '\t' '{ printf "  %-12s %-9s %-34s %s\n", $1, $2, $3, $4 }' || true)"
+      if [ -n "$rows" ]; then
+        printf '%s\n' "$rows"
+      else
+        echo "  (none)"
+        if [ "$all" -eq 0 ]; then
+          hidden="$(printf '%s' "$data" | jq -r '
+            [.[] | select(.name? // "" | startswith("hugin-"))
+             | select((.state // .status // "") == "stopped")] | length' 2>/dev/null || echo 0)"
+          [ "${hidden:-0}" -gt 0 ] && echo "  $hidden stopped session(s) hidden — use 'ng status --all'"
+        fi
+      fi
     else
       claude agents --json --all 2>/dev/null || true
     fi
@@ -184,7 +228,7 @@ case "$cmd" in
   memory) memory ;;
   remember) remember "$@" ;;
   recall) recall "$@" ;;
-  status) status ;;
+  status) status "$@" ;;
   doctor) doctor "$@" ;;
   help|-h|--help) usage ;;
   *)

@@ -101,7 +101,7 @@ examples/fixture/     冒烟测试用最小 Python 模块
 ./bin/hugin remember "..."  # 追加一条经验
 ./bin/hugin recall "..."    # 搜索记忆与 run 证据
 ./bin/hugin ps              # 后台会话 JSON
-./bin/hugin status          # 当前 run + Hugin 会话
+./bin/hugin status [--all]  # 当前 run + Hugin 会话（--all 含已停止）
 ./bin/hugin attach <id>     # 接入某个子会话
 ./bin/hugin logs <id>       # 看子会话输出
 ./bin/hugin stop <id>       # 停止子会话

@@ -11,10 +11,15 @@ You are the Master. Follow these steps in order. Do not skip the gates and do no
 
 ```bash
 ./bin/hugin doctor --quick
-./bin/hugin new-run
 ```
 
-Record the printed run id as `<run>`. If doctor fails, stop and report the failing check.
+Decide the run id:
+
+- If the invocation names a run (`/hugin-run <run-id>`), use it. Create it only when `.hugin/runs/<run-id>` is missing: `./bin/hugin new-run <run-id>`.
+- Otherwise, if `.hugin/CURRENT_RUN` points to an existing run that has no `final-report.md`, reuse it and say which run you are continuing.
+- Otherwise create a fresh run: `./bin/hugin new-run`.
+
+Record the run id as `<run>`. If doctor fails, stop and report the failing check.
 
 Then write `.hugin/runs/<run>/brief.md` with the goal, scope, constraints, exact verification command, and a short excerpt from `.hugin/memory/INDEX.md` / `lessons.md` that applies. Workers get this through the `SessionStart` hook, but the dispatch prompt must still carry the essentials.
 

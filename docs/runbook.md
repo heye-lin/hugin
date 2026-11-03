@@ -117,7 +117,8 @@ Verify: python3 -m unittest discover -s examples/fixture -v
 
 ```bash
 claude agents --json --all
-./bin/hugin status
+./bin/hugin status        # 默认隐藏 stopped 会话
+./bin/hugin status --all  # 包含已停止会话
 ./bin/hugin console      # 只读 Web 看板；同一份文件状态 + attention 队列
 ```
 
