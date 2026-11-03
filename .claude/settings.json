@@ -53,6 +53,7 @@
       "Bash(npm ci *)",
       "Bash(npm ci)",
       "Bash(npm install *)",
+      "Bash(npm install)",
       "Bash(npm run build *)",
       "Bash(npm run build)",
       "Bash(npm run typecheck *)",
