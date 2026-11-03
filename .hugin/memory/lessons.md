@@ -9,3 +9,8 @@
 - 2026-11-03: Hook 的 stdin 字段是 `task_description`，但解析器同时兼容 `description` 和 `task.description`；合成 stdin 测试 7/7 通过。（Phase 1）
 - 2026-11-03: `--settings` 只覆盖同名键，未写的键仍从项目 settings 继承；因此项目 hooks 对 worker 仍生效。（官方 CLI 文档）
 - 2026-11-03: 原生 auto memory 在由另一个 Claude 会话启动的会话（含后台会话）里可能默认关闭；不能把 worker 记忆押在它上面。（官方 memory 文档）
+- 2026-11-04: worktree 中的 hook 必须用 `git rev-parse --git-common-dir` 找主仓库，否则 `.hugin/runs` 与 `CURRENT_RUN` 会解析到 worktree 内。合成 worktree 测试已通过。（Phase 1）
+- 2026-11-04: `SessionStart` 的 `additionalContext` 上限 10000 字符；Hugin 截到 9000。输出必须是可解析 JSON，否则整段被丢弃。（官方 hooks 文档 + 实测 1200 字符）
+- 2026-11-04: 由证据推导 stage 时，`openFindings` 必须在同一函数内计算；漏掉会抛 `ReferenceError` 并让 `node --test` 挂住。（Phase 1）
+- 2026-11-04: WSL 没有配置 git 身份；仓库本地设为 `Hugin <hugin@localhost>`。真实提交前应改成用户自己的身份。（Phase 1）
+- 2026-11-04: Git Bash 会把 `/mnt/...` 改写成 Windows 路径；跨 WSL 调用统一用 PowerShell 或 WSL 内的脚本文件。（Phase 1）

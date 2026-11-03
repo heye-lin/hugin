@@ -13,6 +13,7 @@
 - Master 用后台会话 + `claude agents` 监工；不用 tmux / Agent Teams 分屏。→ `docs/decisions/0001-background-sessions.md`
 - 角色：planner / implementer / reviewer（3 lens）/ verifier；实现者不审自己。→ `.claude/hugin/PROTOCOL.md`
 - 记忆分四层：原生 auto memory、`.hugin/memory/`、run 记忆、CLAUDE.md。→ `docs/decisions/0002-memory-layers.md`
+- 只读 Web 控制台：`./bin/hugin console`，attention-first，editorial 风格。→ `docs/console.md`
 
 ## 门禁
 
@@ -23,9 +24,10 @@
 
 - 后台 worker 会加载全局 OMC/ultracode；派工时必须带 `worker-settings.json`。→ `.claude/hugin/worker-settings.json`
 - `SessionStart` hook 会把当前 run 摘要注入每个子会话；这是跨会话记忆的主通道。→ `.claude/hooks/session-start.mjs`
+- worktree 里的 hook 用 `git rev-parse --git-common-dir` 回到主仓库解析证据与记忆。→ `.claude/hooks/lib.mjs`
 - fixture 初始为红：`divide` 未实现、`multiply` 用错运算符。→ `examples/fixture/requirements/add-feature.md`
 
 ## 未决
 
 - 异族模型探测未执行；reviewer/verifier 暂用 `inherit`。→ `docs/VALIDATION.md`
-- worker 插件抑制与 SessionStart 注入尚未在真实后台会话复验。→ `docs/VALIDATION.md`
+- worker 插件抑制尚未在真实后台会话复验。→ `docs/VALIDATION.md`

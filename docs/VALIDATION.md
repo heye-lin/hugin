@@ -64,12 +64,15 @@
 
 | 检查 | 结果 |
 |---|---|
-| `node --check` 语法 | 待本轮回填 |
+| `node --check` 语法 | VERIFIED（2026-11-04，全部 hooks + workflows + console） |
 | 真实 `TaskCreated` 触发 | UNVERIFIED：需要在主会话里创建一个任务观察 |
-| 缺 `AC:` 阻断 | 待合成 stdin 测试 |
-| 无 handoff 阻断 | 待合成 stdin 测试 |
-| `status: blocked` 阻断 | 待合成 stdin 测试 |
-| `status: complete` 放行 | 待合成 stdin 测试 |
+| 缺 `AC:` 阻断 | VERIFIED：合成 stdin，exit 2 |
+| 无 handoff 阻断 | VERIFIED：合成 stdin，exit 2 |
+| `status: blocked` 阻断 | VERIFIED：合成 stdin，exit 2 |
+| `status: complete` 放行 | VERIFIED：合成 stdin，exit 0 |
+| `HUGIN_SKIP_EVIDENCE=1` | VERIFIED：逃生口放行且写 hooks.log |
+| `SessionStart` 注入 | VERIFIED：1200 字符，包含 brief 与 board |
+| worktree 解析主仓库 | VERIFIED：在临时 worktree 中 `repoRoot()` 返回 `/mnt/d/code/Hugin` |
 
 官方文档已确认的 stdin 字段：`session_id`、`cwd`、`hook_event_name`、`task_id`、`task_subject`、`task_description`（可选）、`teammate_name`（可选）。解析器对 `task_description` / `description` / `task.description` 做防御性兼容。
 
@@ -77,8 +80,8 @@
 
 | 检查 | 结果 |
 |---|---|
-| `review-board.js` 语法 | UNVERIFIED |
-| `pre-merge-gate.js` 语法 | UNVERIFIED |
+| `review-board.js` 语法 | VERIFIED（`node --check`） |
+| `pre-merge-gate.js` 语法 | VERIFIED（`node --check`） |
 | 预埋 bug 被 reviewer 找到 | UNVERIFIED |
 | 测试失败时 gate 返回 BLOCK | UNVERIFIED |
 
@@ -128,3 +131,60 @@ claude logs <id>
 - 项目在 `/mnt/d`（DrvFs）上，`git status` 与 worktree 操作比原生 ext4 慢；大仓库建议放 WSL home。
 - 所有模型别名当前映射到同一模型，reviewer 的“独立性”有限。
 - worker 的插件抑制配置尚未实跑验证。
+
+## 10. 2026-11-04 追加验证
+
+### 10.1 语法与门禁
+
+```
+OK   .claude/hooks/lib.mjs
+OK   .claude/hooks/task-created.mjs
+OK   .claude/hooks/task-completed.mjs
+OK   .claude/hooks/session-start.mjs
+OK   .claude/workflows/review-board.js
+OK   .claude/workflows/pre-merge-gate.js
+OK   lib/console.mjs
+OK   bin/hugin-console.mjs
+OK   web/app.js
+OK   bin/hugin (bash -n)
+```
+
+Hook 合成 stdin 测试：7/7 通过（缺 AC、合法任务、越界 Evidence、缺 handoff、blocked、complete、逃生口）。
+
+`SessionStart`：输出 1200 字符，包含 `MEMTEST_BRIEF` 与 `T1 [pending]`；在临时 worktree 中运行时 `repo: /mnt/d/code/Hugin`，证明 `--git-common-dir` 解析正确。
+
+### 10.2 Console
+
+`node --test tests/console.test.mjs`：5/5 通过。
+
+HTTP 冒烟（`./bin/hugin console --port 8790`）：
+
+```
+{"ok":true,"host":"127.0.0.1","port":8790}
+GET /           200 text/html
+GET /app.css    200 text/css
+GET /app.js     200 text/javascript
+GET /api/state  200 application/json; cache-control: no-store
+GET /..%2f..%2fetc%2fpasswd  403
+Content-Security-Policy: default-src 'self'; ...
+```
+
+浏览器验证（Playwright，1440×1000 与 390×844）：
+
+- 桌面：masthead、attention 队列、stats、ledger、task detail、gate、sessions、memory 全部渲染；点击 T1 后展示 handoff、AC、review finding、verdict、residual risks、memory candidates。
+- 移动端：单列布局，ledger 只保留 Task / Title / Status，无横向裁切。
+- 控制台无 JS 错误或警告。
+- 截图保存在 `.hugin/phase0/artifacts/`（gitignore），不随仓库提交。
+
+### 10.3 环境
+
+`./bin/hugin doctor --quick`：全部 PASS（WSL2、claude、node、git、repo、hooks、console、`.hugin/runs`、`claude agents --json`、worktree、proxy）。
+
+### 10.4 仍未验证
+
+- 项目 workspace trust：`claude --bg` 在本目录仍会被拒绝，必须由人手动接受一次。
+- 带 `worker-settings.json` 的真实后台 worker。
+- 真实 `TaskCreated` / `TaskCompleted` 事件（目前只有合成 stdin）。
+- `/review-board`、`/pre-merge-gate` 运行时行为。
+- 异族模型探测。
+- 原生 auto memory 在后台会话中的实际开关状态。
