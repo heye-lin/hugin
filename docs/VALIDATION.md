@@ -210,3 +210,55 @@ Content-Security-Policy: default-src 'self'; ...
 - Windows 侧真实 `claude --bg` worker：需在 Windows 的 `ng start` 里接受 trust 后实测。
 - Windows 与 WSL 的 `claude agents` 会话注册表独立；Master 与 worker 必须在同一平台。
 - `ng.cmd`、Git Bash 的 `ng`、WSL 的 `~/.local/bin/ng` 都指向本仓库路径；移动仓库后需重装快捷命令。
+
+## 12. 2026-11-04 真实后台 worker 验证
+
+> 编号说明：任务书沿用旧模板写作 §11，但 §11 已被同日的「Windows 原生验证」占用，故按 run 记忆与 T2-fix1 的决定顺延为 §12，避免撞号。
+
+背景：用真实 `claude --bg` 后台会话（非合成 stdin）验证 workspace trust、`SessionStart` 注入、worker 插件抑制与真实 hook 事件。本节只写下列证据文件能证明的内容：`.hugin/runs/hugin-self-iter/` 下的 `hooks.log`、`logs/T1-sessionstart-injection.txt`、`tasks/T1/handoff.json`、`memory.md`。
+
+### 12.1 已证实
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| 真实后台会话启动 / workspace trust | VERIFIED：WSL 侧 T1 探针 `2eacd736`、Windows 侧 T2 会话 `779cf07b` 均真实启动，说明两平台的 workspace trust 均已接受 | `memory.md`、`logs/T1-dispatch.txt`、`logs/T2-fix2-dispatch.txt` |
+| `SessionStart` 注入 | VERIFIED：真实后台会话上下文以 `SessionStart hook additional context: Hugin memory (injected at session start)` 开头，包含 `repo`、`language`、`current run`、`run.json`、brief 全文、board 与 lessons | `logs/T1-sessionstart-injection.txt` |
+| 真实 `TaskCreated` / `TaskCompleted` | VERIFIED：`hooks.log` 共 5 条真实（非合成 stdin）事件 | `hooks.log` |
+| worker-settings 插件抑制 | PARTIAL：OMC/Superpowers 插件技能不可见；项目技能仍可见；全局 `~/.claude/CLAUDE.md` 仍加载 | `tasks/T1/handoff.json` 的 `environment_probe` |
+
+真实 hook 事件明细（`hooks.log`，时间为 UTC）：
+
+- `2026-11-03T17:02:40.136Z` TaskCreated `blocked`：缺 `AC:` / `Evidence:` / `Owner:`。
+- `2026-11-03T17:02:45.987Z` TaskCreated `allowed`：字段合法。
+- `2026-11-03T17:03:35.787Z` TaskCreated `allowed`：另一个任务，用于验证缺 handoff 的完成路径。
+- `2026-11-03T17:03:39.274Z` TaskCompleted `blocked`：`missing_or_invalid_handoff`。
+- `2026-11-03T17:06:05.184Z` TaskCompleted `allowed`：handoff 存在且 `status=complete`。
+
+合计：2 allowed TaskCreated、1 blocked TaskCreated、1 allowed TaskCompleted、1 blocked TaskCompleted。
+
+worker-settings 细节：`ultracode: false` 生效；worker 声称 ultracode 开启，与配置矛盾，标为 UNVERIFIED，未独立证实。全局 `~/.claude/CLAUDE.md`（OMC 指令）仍然加载；`--settings` 不能关闭用户级 memory。
+
+### 12.2 关键缺陷与修复
+
+- **隔离前拒绝写共享检出**：`claude --bg` 会话在 `EnterWorktree` / `git worktree add` 之前拒绝写共享检出（`This background session hasn't isolated its changes yet...`）；进入 worktree 后也写不了主仓库 `.hugin/runs/...`。修复：新增 `hugin work` / `hugin collect`，worker 只写 worktree 内的 handoff，由 Master 收回到主仓库。
+- **`git -C` 不匹配允许规则**：项目 Bash 白名单按前缀匹配，`Bash(git status *)` 不匹配 `git -C <path> status`，worker 连只读状态检查都会被权限提示卡住。修复：`.claude/settings.json` 增加按子命令收窄的只读规则（`Bash(git -C * status *)`、`diff`、`log`、`show`、`rev-parse`、`branch`），并在 deny 同步 `Bash(git -C * push *)`、`Bash(git -C * reset --hard *)`；**不**放行整条 `Bash(git -C *)`，以免绕过 deny（对应 T2 security 的 SEC-1）。
+- **Windows `python3` 不可用**：Windows 上 `python3` 是 Microsoft Store 占位符（exit 49）。修复：验证命令改用 `python`，白名单放行 `Bash(python *)`。
+- **跨平台 worktree 不兼容**：WSL 创建的 worktree 在 `.git` 中记录 `/mnt/...` gitdir，Windows git 无法解析（显示 `prunable`）。修复：worktree 必须与 worker 同平台创建；`hugin work` 会清理无法在本平台使用的陈旧 worktree。
+- **worker 不自行提交**：后台 worker 在已存在的 worktree 中提交前仍会被询问。修复：worker 不提交、不 push，Master 收完证据后统一提交分支。
+
+### 12.3 本任务在 Windows 上的验证命令
+
+| 命令 | 结果 |
+|---|---|
+| `python -m unittest discover -s examples/fixture -v` | UNVERIFIED：本次实现会话没有暴露 Bash/shell 工具（调用返回 `No such tool available: Bash`），命令未执行；待 verifier 独立复跑（预期 6 tests OK、exit 0） |
+| `node --test tests/console.test.mjs` | UNVERIFIED：同上，未执行；待 verifier 独立复跑（预期 5/5 pass、exit 0） |
+
+按本文件开头的规则，未实际执行的项一律标为 UNVERIFIED，不写成 PASS。
+
+### 12.4 仍未验证
+
+- 真实 3-lens reviewer 与 verifier 对本次 fixture 改动的门禁：本任务之后才发生，不预写结论。
+- 异族模型探测：`HUGIN_PROBE_MODELS=1` 未执行。
+- `/review-board` 与 `/pre-merge-gate` 的运行时行为。
+- 12.3 的两条 Windows 复跑命令（本会话无 shell 工具）。
+- worker 内 ultracode 的实际状态：配置为 `false`，worker 曾声称开启，未独立证实。

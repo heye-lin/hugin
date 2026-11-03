@@ -1,8 +1,4 @@
-"""Minimal arithmetic helpers used by the Hugin smoke run.
-
-The fixture is intentionally red until the smoke task is implemented:
-``multiply`` uses the wrong operator and ``divide`` does not exist yet.
-"""
+"""Minimal arithmetic helpers used by the Hugin smoke run."""
 
 
 def add(a, b):
@@ -10,5 +6,8 @@ def add(a, b):
 
 
 def multiply(a, b):
-    # BUG: wrong operator; the smoke task must fix this.
-    return a - b
+    return a * b
+
+
+def divide(a, b):
+    return a / b
