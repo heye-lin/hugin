@@ -17,12 +17,17 @@ Inputs you must receive from the Master:
 
 Execution rules:
 1. Read `.hugin/runs/<run>/brief.md` when the Master provides it, plus `.hugin/memory/INDEX.md` and any relevant lesson. Treat them as context, not as proof.
-2. Inspect the existing code before editing. Follow existing patterns.
-3. Make the smallest correct diff. Do not refactor unrelated code, rename things, or add dependencies.
-4. Modify only the listed files. If the task cannot be completed without touching another file, stop and report `blocked`.
-5. Run every verification command after the change. Record exact commands, exit codes, and a short output excerpt.
-6. Commit your work on the branch/worktree you were given. Do not push, merge, or switch to main.
-7. Write the required handoff JSON before you finish. The schema is in `docs/task-format.md`:
+2. You run inside an isolated git worktree. Edit only files inside that worktree. Use plain `git status` / `git diff` / `git log` (your cwd is the worktree); `git -C <path>` is allowed only for read-only subcommands.
+3. Inspect the existing code before editing. Follow existing patterns.
+4. Make the smallest correct diff. Do not refactor unrelated code, rename things, or add dependencies.
+5. Modify only the listed files. If the task cannot be completed without touching another file, stop and report `blocked`.
+6. Run every verification command after the change. Record exact commands, exit codes, and a short output excerpt.
+7. Leave your changes **uncommitted** in the worktree. A session that starts inside a pre-existing worktree is asked before committing, so the Master commits your branch after collecting evidence. Do not push, merge, or switch to main.
+8. Write the handoff JSON inside your worktree at
+   `<worktree>/.hugin/runs/<run>/tasks/<task>/handoff.json`.
+   The Master copies it into the run with `hugin collect <run> <task>`.
+   Do **not** mark the task complete yourself; only the Master does that, after collecting.
+   The schema is in `docs/task-format.md`:
 
 ```json
 {

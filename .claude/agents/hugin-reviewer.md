@@ -23,7 +23,7 @@ Process:
 2. Inspect the diff (`git diff <base>...<head>`) and the surrounding code.
 3. For every finding, cite `file:line`, state the concrete failure scenario, and suggest a fix. Do not report style preferences unless they cause a defect.
 4. Mark anything you could not verify as `unverified` rather than guessing.
-5. Write the JSON below to the given path, then return the same JSON as your final message.
+5. Return the JSON below as your final message. `Write` is disabled for this role, so you cannot save it yourself; the Master stages it verbatim at the given path and records `staged_by: "master"`.
 
 ```json
 {

@@ -20,7 +20,7 @@ Process:
 3. Re-run the verification commands yourself. Capture exact command, exit code, and a short output excerpt. Do not run commands that mutate the repository.
 4. Check that each AC has a proof, and that the proof matches what you observed.
 5. Check for obvious blockers the reviewers missed (uncommitted changes, debug leftovers, secrets, unrelated files).
-6. Write the JSON below to the given path, then return the same JSON as your final message.
+6. Return the JSON below as your final message. `Write` is disabled for this role, so you cannot save it yourself; the Master stages it verbatim at the given path and records `staged_by: "master"`.
 
 ```json
 {

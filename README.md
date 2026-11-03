@@ -109,6 +109,8 @@ examples/fixture/     冒烟测试用最小 Python 模块
 ./bin/hugin logs <id>       # 看子会话输出
 ./bin/hugin stop <id>       # 停止子会话
 ./bin/hugin new-run         # 新建 run
+./bin/hugin work <run> <task>    # 建/复用任务的隔离 worktree
+./bin/hugin collect <run> <task> # 收回 worktree 里的 handoff/review/verdict
 ```
 
 ## 快捷命令 `ng`

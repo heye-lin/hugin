@@ -17,6 +17,7 @@ const HUGIN = path.join(ROOT, '.hugin');
 const RUNS = path.join(HUGIN, 'runs');
 const CONFIG = path.join(HUGIN, 'config.json');
 const CURRENT_RUN = path.join(HUGIN, 'CURRENT_RUN');
+const WORKTREES = path.join(ROOT, '.claude', 'worktrees');
 
 function sh(bin, args, opts = {}) {
   return spawnSync(bin, args, { cwd: ROOT, stdio: 'inherit', ...opts });
@@ -73,6 +74,140 @@ function exitWith(result) {
   process.exit(result.status ?? 1);
 }
 
+function flagValue(args, name) {
+  const index = args.indexOf(name);
+  return index === -1 ? '' : (args[index + 1] ?? '');
+}
+
+function taskWorktree(run, task) {
+  const recorded = read(path.join(RUNS, run, 'tasks', task, 'worktree.txt')).trim();
+  return recorded || path.join(WORKTREES, `${run}-${task}`);
+}
+
+function isWorktree(dir) {
+  if (!fs.existsSync(dir)) return false;
+  const result = capture('git', ['-C', dir, 'rev-parse', '--git-dir']);
+  return result.status === 0;
+}
+
+/**
+ * Remove worktrees whose checkout is unusable from this platform. A worktree
+ * created under WSL records an absolute `/mnt/...` gitdir that Windows git
+ * cannot resolve, which makes `git worktree list` report it as prunable.
+ * Only deletes when git itself says the directory is not a repository, so an
+ * unexpected git failure never destroys a worktree that still has work in it.
+ */
+function pruneStaleWorktree(dir) {
+  capture('git', ['worktree', 'prune']);
+  if (!fs.existsSync(dir) || isWorktree(dir)) return false;
+  const probe = capture('git', ['-C', dir, 'rev-parse', '--git-dir']);
+  const reason = `${probe.stderr ?? ''}${probe.stdout ?? ''}`;
+  if (!/not a git repository|cannot change to|no such file or directory/i.test(reason)) {
+    console.error(`left worktree in place (unexpected git error): ${reason.trim()}`);
+    return false;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  capture('git', ['worktree', 'prune']);
+  return true;
+}
+
+function work(run, task, args) {
+  if (!run || !task) fail('usage: hugin work <run> <task> [--base <sha>] [--branch <name>]');
+  const meta = readJson(path.join(RUNS, run, 'run.json'));
+  const base = flagValue(args, '--base') || meta?.base || 'HEAD';
+  const branch = flagValue(args, '--branch') || `hugin/${task}`;
+  const dir = path.join(WORKTREES, `${run}-${task}`);
+  const pointer = path.join(RUNS, run, 'tasks', task, 'worktree.txt');
+
+  if (pruneStaleWorktree(dir)) {
+    console.error(`pruned stale worktree: ${dir}`);
+  }
+
+  if (isWorktree(dir)) {
+    write(pointer, `${dir}\n`);
+    console.log(dir);
+    console.log(`branch: ${requireOk(capture('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']), 'git branch').trim()}`);
+    console.log(`head:   ${requireOk(capture('git', ['-C', dir, 'rev-parse', '--short', 'HEAD']), 'git head').trim()}`);
+    console.log('(reused existing worktree)');
+    return;
+  }
+
+  const rev = capture('git', ['rev-parse', '--verify', `${base}^{commit}`]);
+  if (rev.status !== 0) fail(`unknown base commit: ${base}`);
+  const sha = rev.stdout.trim();
+  const branchExists =
+    capture('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
+  const addArgs = branchExists
+    ? ['worktree', 'add', dir, branch]
+    : ['worktree', 'add', '-b', branch, dir, sha];
+  const added = capture('git', addArgs);
+  if (added.status !== 0) {
+    fail((added.stderr || added.stdout || 'git worktree add failed').trim());
+  }
+
+  write(pointer, `${dir}\n`);
+  console.log(dir);
+  console.log(`branch: ${branch}${branchExists ? ' (existing)' : ''}`);
+  const headSha = requireOk(capture('git', ['-C', dir, 'rev-parse', 'HEAD']), 'git head').trim();
+  console.log(`head:   ${headSha.slice(0, 7)}`);
+  if (branchExists && headSha !== sha) {
+    console.error(
+      `warning: branch ${branch} is at ${headSha.slice(0, 7)}, not the requested base ${base} (${sha.slice(0, 7)})`,
+    );
+  }
+}
+
+function evidenceFiles(source, task) {
+  const files = [
+    path.join('tasks', task, 'handoff.json'),
+    path.join('tasks', task, 'verdict.json'),
+    path.join('tasks', task, 'worktree.txt'),
+  ];
+  let names = [];
+  try {
+    names = fs.readdirSync(path.join(source, 'reviews'));
+  } catch {
+    // No reviews yet.
+  }
+  for (const name of names) {
+    if (name.startsWith(`${task}-`) && name.endsWith('.json')) {
+      files.push(path.join('reviews', name));
+    }
+  }
+  return files;
+}
+
+function collect(run, task) {
+  if (!run || !task) fail('usage: hugin collect <run> <task>');
+  const source = path.join(taskWorktree(run, task), '.hugin', 'runs', run);
+  if (!fs.existsSync(source)) {
+    fail(`worktree evidence not found: ${source}\nRun 'hugin work ${run} ${task}' first, or pass the worker a worktree.`);
+  }
+
+  const destination = path.join(RUNS, run);
+  const copied = [];
+  for (const relative of evidenceFiles(source, task)) {
+    const from = path.join(source, relative);
+    if (!fs.existsSync(from)) continue;
+    write(path.join(destination, relative), read(from));
+    copied.push(relative);
+  }
+
+  if (copied.length === 0) fail(`nothing to collect for ${run}/${task} in ${source}`);
+  console.log(`collected ${copied.length} file(s) into .hugin/runs/${run}:`);
+  for (const relative of copied) console.log(`  ${relative}`);
+
+  const handoff = readJson(path.join(destination, 'tasks', task, 'handoff.json'));
+  if (!handoff) fail(`handoff is not valid JSON: .hugin/runs/${run}/tasks/${task}/handoff.json`);
+  if (handoff.status !== 'complete') {
+    console.error(`handoff status: ${handoff.status ?? '(missing)'} — TaskCompleted will block.`);
+    process.exit(1);
+  }
+  const criteria = Array.isArray(handoff.ac) ? handoff.ac.length : 0;
+  const changed = Array.isArray(handoff.files_changed) ? handoff.files_changed.length : 0;
+  console.log(`handoff: status=complete ac=${criteria} files_changed=${changed}`);
+}
+
 function usage() {
   console.log(`Hugin
 
@@ -85,6 +220,8 @@ Usage:
   hugin logs <id|name>        Print recent output of a background session
   hugin stop <id|name>        Stop a background session
   hugin new-run [run-id]      Create .hugin/runs/<run-id> and set CURRENT_RUN
+  hugin work <run> <task>     Create or reuse the task's isolated worktree
+  hugin collect <run> <task>  Copy handoff/review/verdict out of that worktree
   hugin memory                Show the project memory index and recent lessons
   hugin remember <text>       Append a dated lesson to .hugin/memory/lessons.md
   hugin recall <query>        Search .hugin/memory and run evidence
@@ -355,6 +492,13 @@ function doctor(quick) {
     return RUNS;
   });
 
+  runCheck('python on PATH', () => {
+    for (const bin of ['python3', 'python']) {
+      if (capture(bin, ['-c', 'print(1)']).status === 0) return bin;
+    }
+    throw new Error('neither python3 nor python runs (Windows ships a Store alias stub)');
+  });
+
   runCheck('claude agents JSON', () => {
     const output = requireOk(claudeCapture(['agents', '--json', '--all']), 'claude agents');
     JSON.parse(output);
@@ -406,6 +550,12 @@ switch (cmd) {
     break;
   case 'new-run':
     newRun(rest[0]);
+    break;
+  case 'work':
+    work(rest[0], rest[1], rest.slice(2));
+    break;
+  case 'collect':
+    collect(rest[0], rest[1]);
     break;
   case 'memory':
     memory();

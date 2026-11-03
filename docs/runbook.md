@@ -83,9 +83,11 @@ Master 是唯一写者。
 
 ## 4. 派 implementer
 
-同一时间只派一个实现任务。
+同一时间只派一个实现任务。后台会话不能写共享检出，也不能写主仓库的 `.hugin/runs/`，所以先建隔离 worktree，再在它里面启动 worker：
 
 ```bash
+ng work <run> T1 --base <base-commit>     # 打印 worktree 绝对路径
+cd <worktree-path>
 claude --bg --name "hugin-<run>-T1-impl" \
   --agent hugin-implementer \
   --permission-mode acceptEdits \
@@ -95,11 +97,18 @@ Goal: ...
 AC:
 - ...
 Files: examples/fixture/calc.py, examples/fixture/test_calc.py
-Evidence: .hugin/runs/<run>/tasks/T1/handoff.json
+Evidence: <worktree-path>/.hugin/runs/<run>/tasks/T1/handoff.json
 Base: <base-commit>
-Brief: .hugin/runs/<run>/brief.md
-Verify: python3 -m unittest discover -s examples/fixture -v
-只做这个任务。完成后写 handoff，并包含 memory_candidates。"
+Brief: <repo-root>/.hugin/runs/<run>/brief.md
+Verify: python -m unittest discover -s examples/fixture -v   # Windows；WSL 用 python3
+只做这个任务。完成后把 handoff 写进 worktree，不要提交、不要标记完成，并包含 memory_candidates。"
+```
+
+worker `done` 之后：
+
+```bash
+ng collect <run> T1                        # 收回 handoff/review/verdict 到主仓库
+git -C <worktree-path> add -A && git -C <worktree-path> commit -m "feat(T1): ..."
 ```
 
 要点：
@@ -107,6 +116,8 @@ Verify: python3 -m unittest discover -s examples/fixture -v
 - 提示必须自包含（子会话看不到主会话上下文）。
 - `--name` 必须符合 `hugin-<run>-<task>-<role>`。
 - 必须带 `--settings .claude/hugin/worker-settings.json`，否则会加载全局 OMC 插件。
+- Master 与 worker 必须同平台；worktree 也必须在同一平台创建。
+- worker 用纯 `git status` / `git diff` / `git log`（cwd 就是 worktree）；`-C` 形式只在只读子命令的 allow 规则内。
 - 不要加 `--dangerously-skip-permissions`。
 
 ## 5. 监工
@@ -145,15 +156,15 @@ claude agents --json --all | jq -r '.[] | select(.name | startswith("hugin-<run>
 ```bash
 claude --bg --name "hugin-<run>-T1-review-correctness" --agent hugin-reviewer \
   --permission-mode acceptEdits --settings .claude/hugin/worker-settings.json \
-  "lens=correctness。审查 <base>..<branch>。只读。findings 写到 .hugin/runs/<run>/reviews/T1-correctness.json。"
+  "lens=correctness。审查 <base>...<branch>。只读。把 findings JSON 作为最终消息返回（Write 已禁用），由 Master 落盘到 .hugin/runs/<run>/reviews/T1-correctness.json。"
 
 claude --bg --name "hugin-<run>-T1-review-security" --agent hugin-reviewer \
   --permission-mode acceptEdits --settings .claude/hugin/worker-settings.json \
-  "lens=security。审查 <base>..<branch>。只读。findings 写到 .hugin/runs/<run>/reviews/T1-security.json。"
+  "lens=security。审查 <base>...<branch>。只读。把 findings JSON 作为最终消息返回（Write 已禁用），由 Master 落盘到 .hugin/runs/<run>/reviews/T1-security.json。"
 
 claude --bg --name "hugin-<run>-T1-review-tests" --agent hugin-reviewer \
   --permission-mode acceptEdits --settings .claude/hugin/worker-settings.json \
-  "lens=tests。审查 <base>..<branch>。只读。findings 写到 .hugin/runs/<run>/reviews/T1-tests.json。"
+  "lens=tests。审查 <base>...<branch>。只读。把 findings JSON 作为最终消息返回（Write 已禁用），由 Master 落盘到 .hugin/runs/<run>/reviews/T1-tests.json。"
 ```
 
 三个都 `done` 后：
@@ -161,7 +172,7 @@ claude --bg --name "hugin-<run>-T1-review-tests" --agent hugin-reviewer \
 ```bash
 claude --bg --name "hugin-<run>-T1-verify" --agent hugin-verifier \
   --permission-mode acceptEdits --settings .claude/hugin/worker-settings.json \
-  "独立复跑 <base>..<branch> 的验证命令，核对 handoff AC。只读。verdict 写到 .hugin/runs/<run>/reviews/T1-verdict.json。"
+  "独立复跑 <base>...<branch> 的验证命令，核对 handoff AC。只读。把 verdict JSON 作为最终消息返回（Write 已禁用），由 Master 落盘到 .hugin/runs/<run>/reviews/T1-verdict.json。"
 ```
 
 ## 7. 严格门禁（可选）
@@ -271,7 +282,7 @@ claude --resume <sessionId>
 
 **worker 在 worktree 里，handoff 写到哪**
 
-hook 用 `git rev-parse --git-common-dir` 找到主仓库，Evidence 的相对路径按主仓库解析，所以写 `.hugin/runs/<run>/...` 即可，不会落到 worktree 的 `.hugin/`。如果设置了 `HUGIN_RUN_DIR`，确认它指向主仓库下的 run 目录，而不是旧的测试 run。
+写到 **worktree 内**的 `.hugin/runs/<run>/tasks/<task>/handoff.json`。后台会话不能写主仓库的 `.hugin/runs/`；worker 结束后由 Master 运行 `ng collect <run> <task>` 收回到主仓库，hook 校验的是主仓库那份。`collect` 之前标记完成一定被阻断。
 
 **SessionStart 注入的内容不对**
 

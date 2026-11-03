@@ -79,27 +79,47 @@ The `TaskCreated` hook blocks tasks without `AC:` or `Evidence:`.
 
 ## 3. Dispatch implementers
 
-One implementer at a time. Include the full context because background sessions do not inherit your conversation:
+**Same platform only.** Master and every worker must run on the same platform: Windows Master → Windows `claude --bg`; WSL Master → WSL `claude --bg`. The two `claude agents` registries are separate and you cannot supervise or stop a session from the other side.
+
+**Isolate first.** Background sessions cannot write the shared checkout or the main repo's `.hugin/runs/`. Create the task's worktree from the Master, then launch the worker inside it:
 
 ```bash
-claude --bg --name "hugin-<run>-T1-impl" \
+./bin/hugin work <run> T1 --base <sha>     # prints the worktree path
+cd <worktree-path> && claude --bg --name "hugin-<run>-T1-impl" \
   --agent hugin-implementer \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "Run <run>, task T1. Language: <code>. Repo: /mnt/d/code/Hugin. Base commit: <sha>.
-Brief: .hugin/runs/<run>/brief.md
+  "Run <run>, task T1. Language: <code>. Repo: <repo-root>. Worktree: <worktree-path>. Base commit: <sha>.
+Brief: <repo-root>/.hugin/runs/<run>/brief.md
 Relevant memory: <1-3 lines from INDEX/lessons>
 Allowed files: <files>.
 AC:
 <ac>
 Verify with:
-- <exact command>
-Write the handoff to .hugin/runs/<run>/tasks/T1/handoff.json using docs/task-format.md.
+- <exact command, using python on Windows and python3 on WSL>
+Write the handoff inside your worktree to <worktree-path>/.hugin/runs/<run>/tasks/T1/handoff.json (docs/task-format.md).
 Include memory_candidates for reusable, non-obvious facts.
-Do not modify other files. Do not push. Commit on your worktree branch and report it."
+Do not modify other files. Do not push, do not commit. Do not mark the task complete; leave the worktree uncommitted and report it."
 ```
 
+Use plain `git status` / `git diff` / `git log` in worker prompts. `git -C <path> ...` does not match the `Bash(git status *)`-style allowlist and will block on a permission prompt.
+
 Update `board.json` with the returned short id (the `claude --bg` output prints it) and `state: working`.
+
+When the worker is `done`:
+
+```bash
+./bin/hugin collect <run> T1     # copies handoff + reviews/verdict into the run
+```
+
+Then commit the worker's branch from the Master (a worker started inside a pre-existing worktree is asked before committing, so it must not do this itself):
+
+```bash
+git -C <worktree-path> add -A
+git -C <worktree-path> commit -m "feat(<task>): <summary>"
+```
+
+Then mark the task complete. `TaskCompleted` only sees the main-repo evidence file, so never mark complete before `collect`.
 
 ## 4. Supervise
 
@@ -135,14 +155,14 @@ claude --bg --name "hugin-<run>-T1-review-correctness" \
   --agent hugin-reviewer \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "Run <run>, task T1, lens=correctness. Language: <code>. Base <sha>, head <branch>.
+  "Run <run>, task T1, lens=correctness. Language: <code>. Repo: <repo-root>. Base <sha>, head <branch>.
 Read the task AC and handoff at <handoff>.
-Inspect git diff <sha>...<branch> in /mnt/d/code/Hugin.
-Write findings JSON to .hugin/runs/<run>/reviews/T1-correctness.json.
+Review the branch from <repo-root> with plain `git diff <sha>...<branch>` (reviewers need no worktree).
+Return the findings JSON as your final message; Write is disabled for reviewers.
 Read-only: do not edit."
 ```
 
-Repeat with `lens=security` and `lens=tests`, and the matching output paths. For a deterministic strict gate, also run the saved workflow `/review-board` from the Master and persist its result to `.hugin/runs/<run>/reviews/review-board.json`.
+Reviewers return the JSON in their final message — `Write` is disabled for the role. The Master stages it verbatim to `.hugin/runs/<run>/reviews/T1-correctness.json` and adds `"staged_by": "master"`. Repeat with `lens=security` and `lens=tests`, and the matching output paths. For a deterministic strict gate, also run the saved workflow `/review-board` from the Master and persist its result to `.hugin/runs/<run>/reviews/review-board.json`.
 
 ## 6. Verify
 
@@ -153,12 +173,14 @@ claude --bg --name "hugin-<run>-T1-verify" \
   --agent hugin-verifier \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "Run <run>, task T1. Language: <code>. Worktree: <path>, branch: <branch>.
+  "Run <run>, task T1. Language: <code>. Repo: <repo-root>. Worktree: <path>, branch: <branch>.
 Read handoff <path> and all reviewer JSON under .hugin/runs/<run>/reviews/.
 Re-run: <exact commands>.
-Write verdict JSON to .hugin/runs/<run>/tasks/T1/verdict.json.
+Return the verdict JSON as your final message; Write is disabled for verifiers.
 Do not edit source."
 ```
+
+The Master stages the verdict to `.hugin/runs/<run>/tasks/T1/verdict.json` with `"staged_by": "master"`.
 
 Pass only when:
 - every required command exits 0;
