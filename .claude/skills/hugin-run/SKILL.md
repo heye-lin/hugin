@@ -102,14 +102,14 @@ Include memory_candidates for reusable, non-obvious facts.
 Do not modify other files. Do not push, do not commit. Do not mark the task complete; leave the worktree uncommitted and report it."
 ```
 
-Use plain `git status` / `git diff` / `git log` in worker prompts. `git -C <path> ...` does not match the `Bash(git status *)`-style allowlist and will block on a permission prompt.
+Prefer plain `git status` / `git diff` / `git log` in worker prompts (cwd is the worktree). The allowlist also covers read-only `git -C <path> <status|diff|log|show|rev-parse|branch>`; `-C` forms of write commands are not allowed, and `git -C ... push` / `reset --hard` are denied.
 
 Update `board.json` with the returned short id (the `claude --bg` output prints it) and `state: working`.
 
 When the worker is `done`:
 
 ```bash
-./bin/hugin collect <run> T1     # copies handoff + reviews/verdict into the run
+./bin/hugin collect <run> T1     # copies the handoff (and referenced logs) into the run
 ```
 
 Then commit the worker's branch from the Master (a worker started inside a pre-existing worktree is asked before committing, so it must not do this itself):

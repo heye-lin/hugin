@@ -93,7 +93,9 @@ Deps: T0 | none
    ./bin/hugin collect <run> <task>
    ```
 
-   它把 `tasks/<task>/{handoff,verdict,worktree}.json|txt` 和 `reviews/<task>-*.json` 从 worktree 复制到主仓库的 `.hugin/runs/<run>/`，然后校验 handoff。`status` 不是 `complete` 时退出码为 1。
+   它只把 `tasks/<task>/handoff.json`（以及 handoff 里 `commands_run[].log` 引用的 `.hugin/runs/<run>/logs/` 文件）从 worktree 复制到主仓库的 `.hugin/runs/<run>/`，然后校验 handoff：`branch` 必须存在，`status` 不是 `complete` 时退出码为 1。
+
+   它**不**回收 `reviews/` 与 `verdict.json`：实现者能写 worktree，回收会让它伪造审查结论。这两个文件由 Master 从 reviewer/verifier 的最终消息落盘。
 
 4. `TaskCompleted` 只认主仓库里的证据文件，所以先 `collect` 再标记完成。
 

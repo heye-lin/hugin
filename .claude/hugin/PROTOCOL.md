@@ -50,7 +50,7 @@ claude --bg --name "hugin-<run>-T1-review-security" \
   --agent hugin-reviewer \
   --permission-mode acceptEdits \
   --settings .claude/hugin/worker-settings.json \
-  "lens=security。审查 <base>..<branch>。只读。把 findings JSON 写到 <path>。"
+  "lens=security。审查 <base>...<branch>。只读。把 findings JSON 作为最终消息返回（Write 已禁用），由 Master 落盘到 <path>。"
 ```
 
 ## 记忆

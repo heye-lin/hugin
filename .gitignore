@@ -12,5 +12,6 @@ hugin-console-*.png
 .omc/*
 !.omc/skills/
 !.omc/skills/**
+**/.omc/state/
 __pycache__/
 *.pyc

@@ -79,26 +79,61 @@ function flagValue(args, name) {
   return index === -1 ? '' : (args[index + 1] ?? '');
 }
 
-function taskWorktree(run, task) {
-  const recorded = read(path.join(RUNS, run, 'tasks', task, 'worktree.txt')).trim();
-  return recorded || path.join(WORKTREES, `${run}-${task}`);
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function requireSafeRunTask(run, task) {
+  for (const [label, value] of [
+    ['run', run],
+    ['task', task],
+  ]) {
+    if (!SAFE_NAME.test(value ?? '') || value.includes('..')) {
+      fail(`invalid ${label}: ${JSON.stringify(value)} (allowed: letters, digits, dot, underscore, dash)`);
+    }
+  }
 }
 
-function isWorktree(dir) {
-  if (!fs.existsSync(dir)) return false;
-  const result = capture('git', ['-C', dir, 'rev-parse', '--git-dir']);
-  return result.status === 0;
+function inside(base, target) {
+  const root = path.resolve(base);
+  const candidate = path.resolve(target);
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+function samePath(a, b) {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return isWin ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function taskWorktree(run, task) {
+  const fallback = path.join(WORKTREES, `${run}-${task}`);
+  const recorded = read(path.join(RUNS, run, 'tasks', task, 'worktree.txt')).trim();
+  if (!recorded) return fallback;
+  return inside(WORKTREES, recorded) ? recorded : fallback;
 }
 
 /**
- * Remove worktrees whose checkout is unusable from this platform. A worktree
+ * A directory counts as a worktree only when it is the top level of its own
+ * checkout. Plain subdirectories of the repo also make `rev-parse --git-dir`
+ * succeed, so that command alone would treat any directory as a worktree.
+ */
+function isWorktree(dir) {
+  if (!fs.existsSync(dir)) return false;
+  const top = capture('git', ['-C', dir, 'rev-parse', '--show-toplevel']);
+  if (top.status !== 0) return false;
+  const topLevel = top.stdout.trim();
+  return topLevel !== '' && samePath(topLevel, dir);
+}
+
+/**
+ * Park worktrees whose checkout is unusable from this platform. A worktree
  * created under WSL records an absolute `/mnt/...` gitdir that Windows git
  * cannot resolve, which makes `git worktree list` report it as prunable.
- * Only deletes when git itself says the directory is not a repository, so an
- * unexpected git failure never destroys a worktree that still has work in it.
+ *
+ * The directory is never deleted: on another platform it may hold the only copy
+ * of uncommitted work. It is renamed aside, and only when git itself reports
+ * that the directory is not a repository.
  */
 function pruneStaleWorktree(dir) {
-  capture('git', ['worktree', 'prune']);
   if (!fs.existsSync(dir) || isWorktree(dir)) return false;
   const probe = capture('git', ['-C', dir, 'rev-parse', '--git-dir']);
   const reason = `${probe.stderr ?? ''}${probe.stdout ?? ''}`;
@@ -106,17 +141,26 @@ function pruneStaleWorktree(dir) {
     console.error(`left worktree in place (unexpected git error): ${reason.trim()}`);
     return false;
   }
-  fs.rmSync(dir, { recursive: true, force: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const parked = `${dir}.stale-${stamp}`;
+  fs.renameSync(dir, parked);
   capture('git', ['worktree', 'prune']);
+  console.error(`moved unusable worktree aside: ${parked}`);
+  console.error('  inspect it before deleting; its .git link points at another platform');
   return true;
 }
 
 function work(run, task, args) {
   if (!run || !task) fail('usage: hugin work <run> <task> [--base <sha>] [--branch <name>]');
+  requireSafeRunTask(run, task);
   const meta = readJson(path.join(RUNS, run, 'run.json'));
   const base = flagValue(args, '--base') || meta?.base || 'HEAD';
   const branch = flagValue(args, '--branch') || `hugin/${task}`;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) || branch.includes('..')) {
+    fail(`invalid branch: ${JSON.stringify(branch)}`);
+  }
   const dir = path.join(WORKTREES, `${run}-${task}`);
+  if (!inside(WORKTREES, dir)) fail(`refusing worktree path outside .claude/worktrees: ${dir}`);
   const pointer = path.join(RUNS, run, 'tasks', task, 'worktree.txt');
 
   if (pruneStaleWorktree(dir)) {
@@ -157,48 +201,82 @@ function work(run, task, args) {
   }
 }
 
-function evidenceFiles(source, task) {
-  const files = [
-    path.join('tasks', task, 'handoff.json'),
-    path.join('tasks', task, 'verdict.json'),
-    path.join('tasks', task, 'worktree.txt'),
-  ];
-  let names = [];
-  try {
-    names = fs.readdirSync(path.join(source, 'reviews'));
-  } catch {
-    // No reviews yet.
-  }
-  for (const name of names) {
-    if (name.startsWith(`${task}-`) && name.endsWith('.json')) {
-      files.push(path.join('reviews', name));
-    }
-  }
-  return files;
-}
-
+/**
+ * Copy the worker's handoff out of its worktree. Reviews and verdicts are NOT
+ * collected: the implementer can write inside its worktree, so importing them
+ * would let it forge reviewer/verifier evidence. The Master stages those from
+ * the reviewer's own final message instead.
+ */
 function collect(run, task) {
   if (!run || !task) fail('usage: hugin collect <run> <task>');
-  const source = path.join(taskWorktree(run, task), '.hugin', 'runs', run);
-  if (!fs.existsSync(source)) {
-    fail(`worktree evidence not found: ${source}\nRun 'hugin work ${run} ${task}' first, or pass the worker a worktree.`);
+  requireSafeRunTask(run, task);
+
+  const worktree = taskWorktree(run, task);
+  if (!inside(WORKTREES, worktree)) {
+    fail(`refusing to read evidence outside .claude/worktrees: ${worktree}`);
+  }
+  const relative = path.join('tasks', task, 'handoff.json');
+  const from = path.join(worktree, '.hugin', 'runs', run, relative);
+  const to = path.join(RUNS, run, relative);
+
+  let stat;
+  try {
+    stat = fs.lstatSync(from);
+  } catch {
+    fail(
+      `worktree evidence not found: ${from}\nRun 'hugin work ${run} ${task}' first, and make sure the worker wrote its handoff inside the worktree.`,
+    );
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    fail(`handoff must be a regular file, not a link or directory: ${from}`);
   }
 
-  const destination = path.join(RUNS, run);
-  const copied = [];
-  for (const relative of evidenceFiles(source, task)) {
-    const from = path.join(source, relative);
-    if (!fs.existsSync(from)) continue;
-    write(path.join(destination, relative), read(from));
-    copied.push(relative);
+  const text = read(from);
+  let handoff;
+  try {
+    handoff = JSON.parse(text);
+  } catch {
+    fail(`handoff is not valid JSON: ${from}`);
   }
 
-  if (copied.length === 0) fail(`nothing to collect for ${run}/${task} in ${source}`);
-  console.log(`collected ${copied.length} file(s) into .hugin/runs/${run}:`);
-  for (const relative of copied) console.log(`  ${relative}`);
+  const branch = typeof handoff.branch === 'string' ? handoff.branch.trim() : '';
+  if (branch) {
+    const exists =
+      capture('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
+    if (!exists) fail(`handoff.branch does not exist: ${branch}`);
+  }
+  const declared = typeof handoff.worktree === 'string' ? handoff.worktree.trim() : '';
+  if (declared && !samePath(declared, worktree)) {
+    console.error(`warning: handoff.worktree (${declared}) differs from the worktree on disk (${worktree})`);
+  }
 
-  const handoff = readJson(path.join(destination, 'tasks', task, 'handoff.json'));
-  if (!handoff) fail(`handoff is not valid JSON: .hugin/runs/${run}/tasks/${task}/handoff.json`);
+  write(to, text);
+  const copied = [relative];
+  console.log(`collected 1 file into .hugin/runs/${run}:`);
+  console.log(`  ${relative}`);
+
+  const logs = [];
+  for (const entry of Array.isArray(handoff.commands_run) ? handoff.commands_run : []) {
+    const ref = typeof entry?.log === 'string' ? entry.log.trim().replace(/\\/g, '/') : '';
+    if (!ref || !ref.startsWith(`.hugin/runs/${run}/logs/`)) continue;
+    if (!/^[A-Za-z0-9._-]+$/.test(ref.slice(`.hugin/runs/${run}/logs/`.length))) continue;
+    const logFrom = path.join(worktree, ref);
+    let logStat;
+    try {
+      logStat = fs.lstatSync(logFrom);
+    } catch {
+      console.error(`warning: referenced log is missing in the worktree: ${ref}`);
+      continue;
+    }
+    if (logStat.isSymbolicLink() || !logStat.isFile()) {
+      console.error(`warning: referenced log is not a regular file: ${ref}`);
+      continue;
+    }
+    write(path.join(RUNS, ref), read(logFrom));
+    logs.push(ref);
+  }
+  for (const ref of logs) console.log(`  ${ref}`);
+
   if (handoff.status !== 'complete') {
     console.error(`handoff status: ${handoff.status ?? '(missing)'} — TaskCompleted will block.`);
     process.exit(1);
