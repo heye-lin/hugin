@@ -315,6 +315,12 @@ test('status --json reports counts, queue and workers in a parseable object', (t
     }),
   );
 
+  // T1 is backed by a verified handoff; the board alone would not count it.
+  const t1 = path.join(runDir, 'tasks', 'T1');
+  fs.mkdirSync(t1, { recursive: true });
+  fs.writeFileSync(path.join(t1, 'handoff.json'), JSON.stringify({ status: 'complete' }));
+  fs.writeFileSync(path.join(t1, 'verdict.json'), JSON.stringify({ verdict: 'PASS' }));
+
   const agents = [
     { id: 'w1', name: 'hugin-r1-T3-impl', state: 'working', waitingFor: 'tools' },
     { id: 'w2', name: 'hugin-r1-T4-impl', state: 'blocked', waitingFor: 'permission' },
@@ -537,6 +543,108 @@ test('work rejects a --branch that disagrees with the reused worktree, and flags
   const noBase = cli(root, 'work', 'r1', 'T1', '--base');
   assert.equal(noBase.status, 1);
   assert.match(noBase.stderr, /--base requires/);
+});
+
+test('work refuses a branch whose tip differs from the base and creates nothing', (t) => {
+  const root = makeRepo(t);
+  const first = git(root, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(path.join(root, 'next.txt'), 'next\n');
+  git(root, ['add', '.']);
+  git(root, ['-c', 'commit.gpgsign=false', 'commit', '-qm', 'next']);
+  const second = git(root, ['rev-parse', 'HEAD']);
+  git(root, ['branch', 'hugin/T1', first]);
+
+  const mismatch = cli(root, 'work', 'r1', 'T1', '--base', second);
+  assert.equal(mismatch.status, 1);
+  assert.match(mismatch.stderr, /not the requested base/);
+  assert.ok(
+    !fs.existsSync(worktreePath(root, 'r1-T1')),
+    'a mismatch must not create a worktree',
+  );
+
+  const matching = cli(root, 'work', 'r1', 'T1', '--base', first);
+  assert.equal(matching.status, 0, matching.stderr);
+  assert.equal(git(worktreePath(root, 'r1-T1'), ['rev-parse', 'HEAD']), first);
+});
+
+test('work refuses to reuse an existing worktree that is not at the requested base', (t) => {
+  const root = makeRepo(t);
+  assert.equal(cli(root, 'work', 'r1', 'T1').status, 0);
+  const first = git(root, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(path.join(root, 'next.txt'), 'next\n');
+  git(root, ['add', '.']);
+  git(root, ['-c', 'commit.gpgsign=false', 'commit', '-qm', 'next']);
+  const second = git(root, ['rev-parse', 'HEAD']);
+
+  const mismatch = cli(root, 'work', 'r1', 'T1', '--base', second);
+  assert.equal(mismatch.status, 1);
+  assert.match(mismatch.stderr, /not the requested base/);
+  assert.equal(
+    git(worktreePath(root, 'r1-T1'), ['rev-parse', 'HEAD']),
+    first,
+    'the reused worktree is not moved',
+  );
+
+  const matching = cli(root, 'work', 'r1', 'T1', '--base', first);
+  assert.equal(matching.status, 0, matching.stderr);
+  assert.match(matching.stdout, /reused existing worktree/);
+});
+
+test('a valueless --port is rejected before anything starts', (t) => {
+  const root = makeRepo(t);
+  for (const args of [
+    ['start', '--port'],
+    ['start', '--no-console', '--port'],
+    ['console', '--port'],
+    ['console', '--port', '--json'],
+  ]) {
+    const result = cli(root, ...args);
+    assert.equal(result.status, 1, `${args.join(' ')} must exit 1`);
+    assert.match(result.stderr, /--port requires a value/);
+  }
+});
+
+test('console entrypoint rejects a valueless --port', () => {
+  const entry = path.join(REPO_ROOT, 'bin', 'hugin-console.mjs');
+  for (const args of [['--port'], ['--port', '--host', '127.0.0.1'], ['--port=']]) {
+    const result = spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', env: ENV });
+    assert.equal(result.status, 2, `${args.join(' ')} must exit 2`);
+    assert.match(result.stderr, /--port requires a value/);
+  }
+});
+
+test('HUGIN_CONSOLE_PORT applies only when --port is absent', (t) => {
+  const root = makeRepo(t);
+  const fromEnv = cliWithEnv(root, { HUGIN_CONSOLE_PORT: '8790' }, 'console', '--status', '--json');
+  assert.equal(fromEnv.status, 0, fromEnv.stderr);
+  assert.equal(JSON.parse(fromEnv.stdout).port, 8790);
+
+  const explicit = cliWithEnv(
+    root,
+    { HUGIN_CONSOLE_PORT: '8790' },
+    'console',
+    '--status',
+    '--json',
+    '--port',
+    '8791',
+  );
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.equal(JSON.parse(explicit.stdout).port, 8791);
+});
+
+test('ledger commands run from a linked worktree hint at the main checkout', (t) => {
+  const root = makeRepo(t);
+  const linked = path.join(root, '.linked-checkout');
+  git(root, ['worktree', 'add', '--detach', linked, 'HEAD']);
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(linked, 'bin', 'hugin-cli.mjs'), 'collect', 'r1', 'T1'],
+    { cwd: linked, encoding: 'utf8', env: ENV },
+  );
+  assert.equal(result.status, 1, 'the exit code is unchanged');
+  assert.match(result.stderr, /main checkout/);
+  assert.match(result.stderr, /worktree evidence not found/);
 });
 
 test('new-run rejects ids that escape .hugin/runs', (t) => {

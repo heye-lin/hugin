@@ -135,6 +135,8 @@ ng checkpoint <run> T1 --note "divide by zero"   # 提交 worktree、打注解 t
 
 `checkpoint` 默认把分支与 tag `hugin/<run>/<task>` 推到 `origin`；不想推就加 `--no-push`。台账在 `.hugin/runs/<run>/checkpoints.json`。
 
+> `collect`、`checkpoint`、`checkpoints`、`rollback` 读写的都是**主检出**的 `.hugin/runs/` 台账与证据，必须在主检出（仓库根）执行，不要在任务 worktree 里执行；worktree 里的 `.hugin/` 是空的，命令会报“找不到证据”或列出空台账。
+
 要点：
 
 - 提示必须自包含（子会话看不到主会话上下文）。
@@ -249,7 +251,7 @@ ng rollback <run> T1 --dry-run    # 只打印将创建的还原分支
 ng rollback <run> T1              # 建/切到 restore/<run>/<task>-<时间戳>
 ```
 
-`rollback` 只创建或切换到指向 tag commit 的还原分支，不 reset、不 rebase；拒绝脏工作区和 main/master。已有同名分支且指向不同 commit 时直接失败。
+`rollback` 只创建或切换到指向 tag commit 的还原分支，不 reset、不 rebase；拒绝脏工作区和 main/master。已有同名分支且指向不同 commit 时直接失败。`checkpoints` 与 `rollback` 读主检出的台账，必须在主检出执行。
 
 然后提炼记忆：
 

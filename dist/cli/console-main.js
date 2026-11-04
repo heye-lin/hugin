@@ -5,7 +5,32 @@ function flag(name) {
     const index = args.indexOf(name);
     return index >= 0 ? args[index + 1] : undefined;
 }
-const port = Number(flag('--port') ?? process.env.HUGIN_CONSOLE_PORT ?? 8787);
+/**
+ * A value after `--port` or `--port=` is required. Falling back to the env
+ * default when the flag is bare (last, or followed by another flag) would bind
+ * a port the caller never asked for.
+ */
+function portValue() {
+    const inline = args.find((arg) => arg.startsWith('--port='));
+    if (inline !== undefined) {
+        const value = inline.slice('--port='.length);
+        if (!value) {
+            console.error('hugin console: --port requires a value');
+            process.exit(2);
+        }
+        return value;
+    }
+    const index = args.indexOf('--port');
+    if (index === -1)
+        return undefined;
+    const next = args[index + 1];
+    if (!next || next.startsWith('--')) {
+        console.error('hugin console: --port requires a value');
+        process.exit(2);
+    }
+    return next;
+}
+const port = Number(portValue() ?? process.env.HUGIN_CONSOLE_PORT ?? 8787);
 const host = flag('--host') ?? '127.0.0.1';
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
     console.error('hugin console: --port must be an integer between 1 and 65535');

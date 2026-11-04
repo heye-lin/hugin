@@ -126,7 +126,7 @@ test('HTTP API serves state and blocks path traversal', async () => {
         const state = (await stateResponse.json());
         assert.equal(state.run.id, 'testrun');
         assert.equal(state.tasks[0].id, 'T1');
-        assert.deepEqual(state.summary, { running: 0, queued: 0, review: 0, blocked: 0, complete: 1 });
+        assert.deepEqual(state.summary, { running: 0, queued: 0, review: 1, blocked: 0, complete: 0 });
         assert.ok(Array.isArray(state.queue), '/api/state exposes the ready queue');
         assert.equal(stateResponse.headers.get('cache-control'), 'no-store');
         const traversal = await fetch(`${base}/..%2f..%2fetc%2fpasswd`);
@@ -216,11 +216,40 @@ test('buildState summary counts the run and queues ready work in board order', (
         { id: 'w3', name: 'hugin-other-T1-impl', state: 'working' },
     ];
     const state = buildState({ root, workers });
-    assert.deepEqual(state.summary, { running: 1, queued: 1, review: 2, blocked: 1, complete: 2 });
+    assert.deepEqual(state.summary, { running: 1, queued: 1, review: 2, blocked: 1, complete: 1 });
     assert.deepEqual(state.queue, [
         { id: 'T5', title: 'ready', owner: 'impl-5', deps: ['T1', 'T2'] },
     ]);
     assert.equal(state.tasks.find((task) => task.id === 'T4').boardStatus, 'dispatched');
+    // The board says T1 is complete, but no handoff/verdict backs it up, so the
+    // stage is "queued" and it is not counted as complete.
+    assert.equal(state.tasks.find((task) => task.id === 'T1').stage.key, 'queued');
+    // The name heuristic is scoped to this run: hugin-other-T1-impl is another
+    // run's worker and must not be attached to this run's T1.
+    assert.equal(state.tasks.find((task) => task.id === 'T1').worker, null);
+    assert.equal(state.tasks.find((task) => task.id === 'T3').stage.key, 'review');
+    fs.rmSync(root, { recursive: true, force: true });
+});
+test('summary counts agree with the stage for a board-complete task without a verdict', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-stage-'));
+    const runDir = path.join(root, '.hugin', 'runs', 'testrun');
+    fs.mkdirSync(path.join(runDir, 'reviews'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.hugin', 'memory'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.hugin', 'CURRENT_RUN'), 'testrun\n');
+    writeJson(path.join(runDir, 'run.json'), { run: 'testrun', status: 'active' });
+    writeJson(path.join(runDir, 'board.json'), {
+        run: 'testrun',
+        tasks: [{ id: 'T1', title: 'board says done', owner: 'impl-1', status: 'complete', deps: [] }],
+    });
+    // Evidence is complete but not verified: the stage is review, so the summary
+    // must count review — never complete, and never both.
+    writeJson(path.join(runDir, 'tasks', 'T1', 'handoff.json'), { status: 'complete' });
+    const state = buildState({ root });
+    const task = state.tasks[0];
+    assert.equal(task.stage.key, 'review');
+    assert.equal(state.summary.review, 1);
+    assert.equal(state.summary.complete, 0);
+    assert.equal(state.summary.review + state.summary.complete, 1, 'one task is counted in exactly one bucket');
     fs.rmSync(root, { recursive: true, force: true });
 });
 test('console pidfile prevents duplicate starts and clears a stale pid', async () => {

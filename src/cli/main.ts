@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import type { SpawnSyncOptions, SpawnSyncReturns } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as checkpoints from '../lib/checkpoints.js';
+import { claudeBinary } from '../lib/claude.js';
 import {
   buildState,
   ensureConsole,
@@ -23,7 +24,7 @@ const argv = process.argv.slice(2);
 const cmd = argv[0] || 'help';
 const rest = argv.slice(1);
 const isWin = process.platform === 'win32';
-const CLAUDE = process.env.HUGIN_CLAUDE || (isWin ? 'claude.exe' : 'claude');
+const CLAUDE = claudeBinary();
 const HUGIN = path.join(ROOT, '.hugin');
 const RUNS = path.join(HUGIN, 'runs');
 const CONFIG = path.join(HUGIN, 'config.json');
@@ -95,15 +96,22 @@ function readClaudeWorkers(): { workers: any[]; error: string | null } {
   return { workers, error: null };
 }
 
+/**
+ * Resolve `--port N` / `--port=N`. A flag that is present but has no value (at
+ * the end, followed by another flag, or `--port=`) is an error: silently
+ * falling back to the env/default would hide the typo and start the console on
+ * an unexpected port. The env override and 8787 apply only when the flag is
+ * absent.
+ */
 function parsePortArgs(args: string[]): number {
-  const inline = args.find((arg) => arg.startsWith('--port='));
+  const option = optionValue(args, '--port');
   let raw: string | undefined;
-  if (inline) {
-    raw = inline.slice('--port='.length);
-  } else if (args.includes('--port')) {
-    raw = args[args.indexOf('--port') + 1];
+  if (option.given) {
+    if (!option.value) fail('--port requires a value');
+    raw = option.value;
+  } else {
+    raw = process.env.HUGIN_CONSOLE_PORT;
   }
-  if (raw === undefined || raw === '') raw = process.env.HUGIN_CONSOLE_PORT;
   if (raw === undefined || raw === '') raw = String(DEFAULT_CONSOLE_PORT);
   const port = Number(raw);
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : NaN;
@@ -160,6 +168,41 @@ function optionValue(args: string[], name: string): { given: boolean; value: str
   if (index === -1) return { given: false, value: '' };
   const next = args[index + 1];
   return { given: true, value: next && !next.startsWith('--') ? next : '' };
+}
+
+function resolveCommit(rev: string): string | null {
+  const result = capture('git', ['rev-parse', '--verify', `${rev}^{commit}`]);
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+/**
+ * The run ledger lives in the main checkout. A task worktree has its own
+ * `.hugin/` that is empty, so ledger commands run there see "no evidence" and
+ * look broken. Return the main checkout root when the current one is a linked
+ * worktree, or null when this is already the main checkout.
+ */
+function mainCheckoutRoot(): string | null {
+  const common = capture('git', ['rev-parse', '--git-common-dir']);
+  if (common.status !== 0) return null;
+  const raw = common.stdout.trim();
+  if (!raw) return null;
+  const commonDir = path.resolve(ROOT, raw);
+  const mainRoot = path.dirname(commonDir);
+  return samePath(mainRoot, ROOT) ? null : mainRoot;
+}
+
+function printMainCheckoutHint(): void {
+  const mainRoot = mainCheckoutRoot();
+  if (!mainRoot) return;
+  console.error(
+    `hint: .hugin/runs belongs to the main checkout; run this from ${mainRoot}, not a task worktree`,
+  );
+}
+
+function hintIfLedgerMissing(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/ledger|no checkpoint|not a git worktree|evidence|does not exist/i.test(message)) return;
+  printMainCheckoutHint();
 }
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -310,20 +353,21 @@ function work(run: string | undefined, task: string | undefined, args: string[])
         `--branch ${branchOption.value} does not match the existing worktree branch ${currentBranch} (${dir})`,
       );
     }
+    const current = requireOk(capture('git', ['-C', dir, 'rev-parse', 'HEAD']), 'git head').trim();
+    // Reusing a branch that already moved away from the requested base would
+    // make the new session work on top of a different history without saying
+    // so. Reuse is only safe when the tip still matches.
+    const wanted = resolveCommit(base);
+    if (wanted !== null && current !== wanted) {
+      fail(
+        `existing worktree ${dir} is at ${current.slice(0, 7)} on ${currentBranch}, not the requested base ${base} (${wanted.slice(0, 7)}); pass --branch <name> to use a different branch, or remove the old worktree/branch`,
+      );
+    }
     write(pointer, `${dir}\n`);
     console.log(dir);
     console.log(`branch: ${currentBranch}`);
-    const current = requireOk(capture('git', ['-C', dir, 'rev-parse', 'HEAD']), 'git head').trim();
     console.log(`head:   ${current.slice(0, 7)}`);
     console.log('(reused existing worktree)');
-    if (baseOption.given) {
-      const wanted = capture('git', ['rev-parse', '--verify', `${baseOption.value}^{commit}`]);
-      if (wanted.status === 0 && wanted.stdout.trim() !== current) {
-        console.error(
-          `warning: existing worktree is at ${current.slice(0, 7)}, not --base ${baseOption.value}`,
-        );
-      }
-    }
     return;
   }
 
@@ -332,6 +376,23 @@ function work(run: string | undefined, task: string | undefined, args: string[])
   const sha = rev.stdout.trim();
   const branchExists =
     capture('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
+  // Reusing an existing branch is only safe when it still points at the
+  // requested base. Check before `git worktree add` so a mismatch leaves no
+  // half-created worktree behind.
+  if (branchExists) {
+    const existingTip = requireOk(
+      capture('git', ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]),
+      'git branch tip',
+    ).trim();
+    if (existingTip !== sha) {
+      const remedy = branchOption.given
+        ? 'remove the old branch or pass a different --branch name'
+        : 'pass --branch <name> to use a different branch, or remove the old worktree/branch';
+      fail(
+        `branch ${branch} is at ${existingTip.slice(0, 7)}, not the requested base ${base} (${sha.slice(0, 7)}); ${remedy}`,
+      );
+    }
+  }
   const addArgs = branchExists
     ? ['worktree', 'add', dir, branch]
     : ['worktree', 'add', '-b', branch, dir, sha];
@@ -345,11 +406,6 @@ function work(run: string | undefined, task: string | undefined, args: string[])
   console.log(`branch: ${branch}${branchExists ? ' (existing)' : ''}`);
   const headSha = requireOk(capture('git', ['-C', dir, 'rev-parse', 'HEAD']), 'git head').trim();
   console.log(`head:   ${headSha.slice(0, 7)}`);
-  if (branchExists && headSha !== sha) {
-    console.error(
-      `warning: branch ${branch} is at ${headSha.slice(0, 7)}, not the requested base ${base} (${sha.slice(0, 7)})`,
-    );
-  }
 }
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
@@ -376,6 +432,7 @@ function collect(run: string | undefined, task: string | undefined): void {
   try {
     stat = fs.lstatSync(from);
   } catch {
+    printMainCheckoutHint();
     fail(
       `worktree evidence not found: ${from}\nRun 'hugin work ${run} ${task}' first, and make sure the worker wrote its handoff inside the worktree.`,
     );
@@ -568,6 +625,7 @@ function checkpoint(run: string | undefined, task: string | undefined, args: str
     }
     if (result.pushError) process.exit(1);
   } catch (error) {
+    hintIfLedgerMissing(error);
     fail((error as Error).message);
   }
 }
@@ -581,6 +639,9 @@ function listCheckpoints(run: string | undefined, args: string[]): void {
       return;
     }
     if (ledger.checkpoints.length === 0) {
+      // An empty ledger read from a linked worktree almost always means the
+      // worktree's own `.hugin/runs`, not the main checkout's.
+      printMainCheckoutHint();
       console.log(`checkpoints: none for ${run}`);
       return;
     }
@@ -612,6 +673,7 @@ function rollback(run: string | undefined, task: string | undefined, args: strin
     console.log(`rollback ${result.entry.task}: ${result.tag} -> ${result.commit.slice(0, 7)}`);
     console.log(`  switched to branch: ${result.branch}`);
   } catch (error) {
+    hintIfLedgerMissing(error);
     fail((error as Error).message);
   }
 }
@@ -890,8 +952,10 @@ function parseStartArgs(args: string[]): {
 
 async function start(args: string[]): Promise<never> {
   const parsed = parseStartArgs(args);
+  // Validate --port even with --no-console: a valueless flag is a typo, not a
+  // reason to silently use the env/default.
+  const port = parsePortArgs(parsed.consoleArgs);
   if (!parsed.noConsole) {
-    const port = parsePortArgs(parsed.consoleArgs);
     if (!Number.isInteger(port)) {
       fail('usage: hugin start [--no-console] [--port <1-65535>]');
     }
@@ -1135,6 +1199,9 @@ switch (cmd) {
       await consoleStopCommand();
       break;
     }
+    // Reject a valueless --port here as well as in the console entrypoint, so
+    // `hugin console --port` never falls through to the env/default.
+    parsePortArgs(rest);
     exitWith(sh(process.execPath, [path.join(ROOT, 'bin', 'hugin-console.mjs'), ...rest]));
     break;
   case 'ps':

@@ -175,19 +175,28 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    let inFlight = false;
+    // Aborts on unmount so a slow response can never write into an unmounted
+    // tree; the same signal marks the poller as cancelled.
+    const controller = new AbortController();
 
     async function load(): Promise<void> {
+      // A slow request must not stack up: skip this tick and try again on the
+      // next 3-second beat.
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
       try {
         const next = await fetchState();
-        if (!active) return;
+        if (!active || controller.signal.aborted) return;
         setData(next);
         setError(null);
         setRefreshedAt(new Date());
       } catch (failure) {
-        if (!active) return;
+        if (!active || controller.signal.aborted) return;
         setError(failure instanceof Error ? failure.message : String(failure));
       } finally {
-        if (active) setFirstLoad(false);
+        inFlight = false;
+        if (active && !controller.signal.aborted) setFirstLoad(false);
       }
     }
 
@@ -198,6 +207,7 @@ export default function App() {
 
     return () => {
       active = false;
+      controller.abort();
       window.clearInterval(timer);
     };
   }, []);

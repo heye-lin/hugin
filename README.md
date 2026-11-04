@@ -140,6 +140,8 @@ node --test --test-name-pattern="buildState" dist/tests/console.test.js   # 单�
                             # 创建/切换还原分支，非破坏；拒绝脏工作区与 main/master
 ```
 
+`collect`、`checkpoint`、`checkpoints`、`rollback` 读写**主检出**的 `.hugin/runs/` 台账与证据，必须在主检出（仓库根）执行；在任务 worktree 里执行会看到空台账或“找不到证据”。
+
 ## 快捷命令 `ng`
 
 `ng` 等价于 `./bin/hugin`，已注册到两个位置：

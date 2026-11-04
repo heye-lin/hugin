@@ -6,6 +6,7 @@ import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { claudeBinary } from './claude.js';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -286,24 +287,41 @@ function deriveStage(
       action: openFindings > 0 ? 'inspect open findings' : 'dispatch reviewer + verifier',
     };
   }
+  // A board that already handed the task to review is a real review stage even
+  // before the handoff lands; otherwise the task table and the summary counts
+  // would disagree about the same row.
+  if (task?.status === 'review') {
+    return {
+      key: 'review',
+      label: 'Awaiting review',
+      action: 'dispatch reviewer + verifier',
+    };
+  }
   if (worker?.state === 'working' || ['working', 'dispatched'].includes(task?.status)) {
     return { key: 'working', label: 'Working', action: 'monitor' };
   }
   return { key: 'queued', label: 'Queued', action: 'dispatch an implementer' };
 }
 
-function hydrateTask(task: any, runDir: string, workers: any[]): any {
+function hydrateTask(task: any, runDir: string, workers: any[], runId: string | null = null): any {
   const id = cap(task?.id ?? task?.task ?? '', 80);
   const safe = safeName(id);
   const handoff = safe && runDir ? readJson(path.join(runDir, 'tasks', id, 'handoff.json')) : null;
   const reviews = safe && runDir ? LENSES.map((lens) => readReview(runDir, id, lens)).filter(Boolean) : [];
   const verdict = safe && runDir ? readVerdict(runDir, id) : null;
+  // Worker names encode `hugin-<run>-<task>-<role>`, so a name heuristic is only
+  // safe once it is scoped to this run: another run's `hugin-other-T1-impl` must
+  // never drive this run's T1 stage. Without a run id, keep the loose heuristic.
+  const workerPrefix = runId ? `hugin-${runId}-` : '';
   const worker =
     workers.find(
       (candidate: any) =>
         candidate.id === task?.worker ||
         candidate.name === task?.worker ||
-        (id && typeof candidate.name === 'string' && candidate.name.includes(`-${id}-`)),
+        (id &&
+          typeof candidate.name === 'string' &&
+          candidate.name.includes(`-${id}-`) &&
+          (!workerPrefix || candidate.name.startsWith(workerPrefix))),
     ) ?? null;
 
   const commandsRun = Array.isArray(handoff?.commands_run)
@@ -387,20 +405,25 @@ function hydrateTask(task: any, runDir: string, workers: any[]): any {
   };
 }
 
+/**
+ * Whether a dependency is done enough to unblock its dependents. A board entry
+ * marked `complete` is the Master's dispatch signal, so it counts here even
+ * before the evidence is verified; the summary counts stay stricter and follow
+ * the task stage instead.
+ */
 function taskIsComplete(task: any): boolean {
   if (String(task?.boardStatus ?? task?.status ?? '') === 'complete') return true;
   return task?.handoff?.status === 'complete' && task?.verdict?.verdict === 'PASS';
-}
-
-function taskNeedsReview(task: any): boolean {
-  if (String(task?.boardStatus ?? '') === 'review') return true;
-  return task?.handoff?.status === 'complete' && task?.verdict?.verdict !== 'PASS';
 }
 
 /**
  * Roll a run up into the five counts the terminal and the web console share.
  * Worker counts are scoped to this run's session names (`hugin-<run>-…`);
  * `queued` is board order, filtered to pending tasks whose deps are all complete.
+ *
+ * `review` and `complete` are read from each task's stage — the same value the
+ * task table shows — so a board status alone can never claim a task is verified
+ * and one task is never counted in two buckets.
  */
 export function summarizeTasks(
   tasks: any[],
@@ -426,14 +449,18 @@ export function summarizeTasks(
 
   const queue: QueueItem[] = [];
   for (const task of tasks) {
-    if (taskIsComplete(task)) {
+    const stage = String(task?.stage?.key ?? '');
+    if (stage === 'complete') {
       counts.complete += 1;
       continue;
     }
-    if (taskNeedsReview(task)) {
+    if (stage === 'review') {
       counts.review += 1;
       continue;
     }
+    // `queued` keeps its dispatch meaning: a pending board task whose deps are
+    // all complete. Review/complete tasks were already claimed above, so one
+    // task never lands in two buckets.
     if (String(task?.boardStatus ?? '') !== 'pending') continue;
     const deps = Array.isArray(task?.deps) ? task.deps.map((dep: any) => String(dep)) : [];
     const ready = deps.every((dep: string) => {
@@ -557,7 +584,7 @@ export function buildState({
   const board = runDir ? readJson(path.join(runDir, 'board.json')) : null;
   const boardTasks: any[] = Array.isArray(board?.tasks) ? board.tasks : [];
   const tasks = (boardTasks.length > 0 ? boardTasks : scanTaskDirs(runDir)).map((task: any) =>
-    hydrateTask(task, runDir, workers),
+    hydrateTask(task, runDir, workers, effective),
   );
 
   const memoryDir = path.join(root, '.hugin', 'memory');
@@ -604,12 +631,23 @@ export function buildState({
   };
 }
 
-export async function readWorkers(): Promise<{ workers: any[]; error: string | null }> {
+export interface ReadWorkersDeps {
+  /** Injectable so tests can assert the shared executable without spawning. */
+  exec?: (bin: string, args: string[]) => Promise<{ stdout: string }>;
+}
+
+export async function readWorkers(
+  deps: ReadWorkersDeps = {},
+): Promise<{ workers: any[]; error: string | null }> {
+  const exec =
+    deps.exec ??
+    ((bin: string, args: string[]) =>
+      execFileAsync(bin, args, {
+        timeout: 5000,
+        maxBuffer: 4 * 1024 * 1024,
+      }));
   try {
-    const { stdout } = await execFileAsync('claude', ['agents', '--json', '--all'], {
-      timeout: 5000,
-      maxBuffer: 4 * 1024 * 1024,
-    });
+    const { stdout } = await exec(claudeBinary(), ['agents', '--json', '--all']);
     const all = JSON.parse(stdout);
     const workers = (Array.isArray(all) ? all : [])
       .filter((worker: any) => typeof worker?.name === 'string' && worker.name.startsWith('hugin-'))

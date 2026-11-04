@@ -4,6 +4,7 @@ import http from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { claudeBinary } from './claude.js';
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ROOT = process.env.HUGIN_ROOT
@@ -185,20 +186,37 @@ function deriveStage(task, handoff, verdict, reviews, worker) {
             action: openFindings > 0 ? 'inspect open findings' : 'dispatch reviewer + verifier',
         };
     }
+    // A board that already handed the task to review is a real review stage even
+    // before the handoff lands; otherwise the task table and the summary counts
+    // would disagree about the same row.
+    if (task?.status === 'review') {
+        return {
+            key: 'review',
+            label: 'Awaiting review',
+            action: 'dispatch reviewer + verifier',
+        };
+    }
     if (worker?.state === 'working' || ['working', 'dispatched'].includes(task?.status)) {
         return { key: 'working', label: 'Working', action: 'monitor' };
     }
     return { key: 'queued', label: 'Queued', action: 'dispatch an implementer' };
 }
-function hydrateTask(task, runDir, workers) {
+function hydrateTask(task, runDir, workers, runId = null) {
     const id = cap(task?.id ?? task?.task ?? '', 80);
     const safe = safeName(id);
     const handoff = safe && runDir ? readJson(path.join(runDir, 'tasks', id, 'handoff.json')) : null;
     const reviews = safe && runDir ? LENSES.map((lens) => readReview(runDir, id, lens)).filter(Boolean) : [];
     const verdict = safe && runDir ? readVerdict(runDir, id) : null;
+    // Worker names encode `hugin-<run>-<task>-<role>`, so a name heuristic is only
+    // safe once it is scoped to this run: another run's `hugin-other-T1-impl` must
+    // never drive this run's T1 stage. Without a run id, keep the loose heuristic.
+    const workerPrefix = runId ? `hugin-${runId}-` : '';
     const worker = workers.find((candidate) => candidate.id === task?.worker ||
         candidate.name === task?.worker ||
-        (id && typeof candidate.name === 'string' && candidate.name.includes(`-${id}-`))) ?? null;
+        (id &&
+            typeof candidate.name === 'string' &&
+            candidate.name.includes(`-${id}-`) &&
+            (!workerPrefix || candidate.name.startsWith(workerPrefix)))) ?? null;
     const commandsRun = Array.isArray(handoff?.commands_run)
         ? handoff.commands_run.slice(0, 30).map((command) => ({
             cmd: cap(command?.cmd, 600),
@@ -268,20 +286,25 @@ function hydrateTask(task, runDir, workers) {
         openFindings,
     };
 }
+/**
+ * Whether a dependency is done enough to unblock its dependents. A board entry
+ * marked `complete` is the Master's dispatch signal, so it counts here even
+ * before the evidence is verified; the summary counts stay stricter and follow
+ * the task stage instead.
+ */
 function taskIsComplete(task) {
     if (String(task?.boardStatus ?? task?.status ?? '') === 'complete')
         return true;
     return task?.handoff?.status === 'complete' && task?.verdict?.verdict === 'PASS';
 }
-function taskNeedsReview(task) {
-    if (String(task?.boardStatus ?? '') === 'review')
-        return true;
-    return task?.handoff?.status === 'complete' && task?.verdict?.verdict !== 'PASS';
-}
 /**
  * Roll a run up into the five counts the terminal and the web console share.
  * Worker counts are scoped to this run's session names (`hugin-<run>-…`);
  * `queued` is board order, filtered to pending tasks whose deps are all complete.
+ *
+ * `review` and `complete` are read from each task's stage — the same value the
+ * task table shows — so a board status alone can never claim a task is verified
+ * and one task is never counted in two buckets.
  */
 export function summarizeTasks(tasks, workers = [], runId = null) {
     const prefix = runId ? `hugin-${runId}-` : 'hugin-';
@@ -299,14 +322,18 @@ export function summarizeTasks(tasks, workers = [], runId = null) {
         byId.set(String(task?.id ?? ''), task);
     const queue = [];
     for (const task of tasks) {
-        if (taskIsComplete(task)) {
+        const stage = String(task?.stage?.key ?? '');
+        if (stage === 'complete') {
             counts.complete += 1;
             continue;
         }
-        if (taskNeedsReview(task)) {
+        if (stage === 'review') {
             counts.review += 1;
             continue;
         }
+        // `queued` keeps its dispatch meaning: a pending board task whose deps are
+        // all complete. Review/complete tasks were already claimed above, so one
+        // task never lands in two buckets.
         if (String(task?.boardStatus ?? '') !== 'pending')
             continue;
         const deps = Array.isArray(task?.deps) ? task.deps.map((dep) => String(dep)) : [];
@@ -415,7 +442,7 @@ export function buildState({ root = DEFAULT_ROOT, runId, workers = [], workersEr
     const meta = runDir ? readJson(path.join(runDir, 'run.json')) : null;
     const board = runDir ? readJson(path.join(runDir, 'board.json')) : null;
     const boardTasks = Array.isArray(board?.tasks) ? board.tasks : [];
-    const tasks = (boardTasks.length > 0 ? boardTasks : scanTaskDirs(runDir)).map((task) => hydrateTask(task, runDir, workers));
+    const tasks = (boardTasks.length > 0 ? boardTasks : scanTaskDirs(runDir)).map((task) => hydrateTask(task, runDir, workers, effective));
     const memoryDir = path.join(root, '.hugin', 'memory');
     let reviewFiles = [];
     if (runDir) {
@@ -457,12 +484,14 @@ export function buildState({ root = DEFAULT_ROOT, runId, workers = [], workersEr
         },
     };
 }
-export async function readWorkers() {
-    try {
-        const { stdout } = await execFileAsync('claude', ['agents', '--json', '--all'], {
+export async function readWorkers(deps = {}) {
+    const exec = deps.exec ??
+        ((bin, args) => execFileAsync(bin, args, {
             timeout: 5000,
             maxBuffer: 4 * 1024 * 1024,
-        });
+        }));
+    try {
+        const { stdout } = await exec(claudeBinary(), ['agents', '--json', '--all']);
         const all = JSON.parse(stdout);
         const workers = (Array.isArray(all) ? all : [])
             .filter((worker) => typeof worker?.name === 'string' && worker.name.startsWith('hugin-'))

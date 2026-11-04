@@ -26,7 +26,7 @@
 | 后台会话 | 所有 `hugin-*` 后台会话：ID、名称、状态、等待原因 |
 | 运行记录 | run 列表：运行、状态、base、创建时间；当前 run 带“当前”标记 |
 
-数据每 **3 秒** 轮询一次 `/api/state`。请求失败时顶部显示中文 Alert“无法连接控制台服务，正在重试…”，并保留上一次成功的数据；首次加载显示“正在加载控制台数据…”。
+数据每 **3 秒** 轮询一次 `/api/state`。上一轮请求未返回时跳过本轮，避免请求堆积；组件卸载时通过 `AbortController` 中止并忽略迟到的响应。请求失败时顶部显示中文 Alert“无法连接控制台服务，正在重试…”，并保留上一次成功的数据；首次加载显示“正在加载控制台数据…”。
 
 阶段（stage）由证据推导，而不是照抄内部状态；前端把 stage 与状态枚举翻成中文：
 
@@ -36,7 +36,7 @@
 | `failed` | worker 或任务 `failed` | 失败 |
 | `blocked` | 任务/handoff 为 `blocked` | 阻塞 |
 | `complete` | handoff `complete` + verdict `PASS` + 无 open finding | 完成 |
-| `review` | handoff `complete`，但有 open finding 或未验收 | 待审 |
+| `review` | handoff `complete`，但有 open finding 或未验收；或 board 明确标 `review` | 待审 |
 | `working` | worker `working` 或任务 `dispatched` | 进行中 |
 | `queued` | 其他 | 排队 |
 
@@ -62,9 +62,12 @@
 ```
 
 - `running`：本 run（`hugin-<run>-*`）中 state 为 `working` 的会话数；
-- `queued`：`board.json` 中 `pending` 且依赖全部完成的任务，按 board 顺序放进 `queue`；
-- `review`：handoff `complete` 但 verdict 不是 `PASS`（或 board 明确标 `review`）；
-- `complete`：board `complete`，或 handoff `complete` + verdict `PASS`。
+- `queued`：`board.json` 中 `pending` 且依赖全部完成的任务，按 board 顺序放进 `queue`（review/complete 任务已先归入对应桶，不会重复计入）；
+- `review`：stage 为 `review` 的任务（handoff `complete` 但 verdict 不是 `PASS`/有 open finding，或 board 明确标 `review`）；
+- `blocked`：本 run 中 state 为 `blocked` 的会话数；
+- `complete`：stage 为 `complete` 的任务（handoff `complete` + verdict `PASS` + 无 open finding）。
+
+计数与任务表的 stage 同源：每个任务只落进一个桶。**board 标 `complete` 本身不算完成**——只有 handoff 与 verdict 满足 complete 条件时，stage 才是 `complete`；否则按实际 stage 计入 `review` 或保持 `queued`。若同一任务同时出现在两个计数里，即为 bug。
 
 只允许 `GET` / `HEAD`。所有响应 `Cache-Control: no-store`（API）或 `no-cache`（静态）；带 CSP、`nosniff`、`no-referrer`。静态文件限定在 `web/dist`（或回退的 `web/`）下，路径穿越返回 403。
 
