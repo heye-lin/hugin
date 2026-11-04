@@ -9,6 +9,10 @@ export class CheckpointError extends Error {
 }
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+// A ledger is hand-editable, and its tag is passed to git as an argument. An
+// option-looking or path-bearing tag could be interpreted as a flag or a ref
+// outside refs/tags, so only the exact `hugin/<run>/<task>` shape is accepted.
+const SAFE_TAG = /^hugin\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 function git(cwd, args) {
     return spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30000 });
 }
@@ -104,7 +108,14 @@ function readLedgerFile(file, run) {
         throw new CheckpointError(`checkpoint ledger is not valid JSON: ${file}`);
     }
     const checkpoints = Array.isArray(data.checkpoints)
-        ? data.checkpoints.filter((entry) => entry && typeof entry.task === 'string')
+        ? data.checkpoints
+            .filter((entry) => entry && typeof entry.task === 'string')
+            .map((entry) => {
+            if (typeof entry.tag !== 'string' || !SAFE_TAG.test(entry.tag)) {
+                throw new CheckpointError(`invalid checkpoint tag in ${file}: ${JSON.stringify(entry.tag)} (expected hugin/<run>/<task>)`);
+            }
+            return entry;
+        })
         : [];
     return { run, checkpoints };
 }
@@ -140,7 +151,9 @@ export function checkpoint(ctx, runArg, taskArg, options = {}) {
         throw new CheckpointError(`worktree branch ${branch} is not ${expected}`);
     }
     const note = (options.note ?? '').trim();
-    const dirty = git(dir, ['status', '--porcelain']).stdout.trim() !== '';
+    // A failing `git status` is not a clean tree: treating it as clean would tag
+    // a commit that misses the worker's changes.
+    const dirty = ok(git(dir, ['status', '--porcelain']), 'git status').trim() !== '';
     let commit;
     if (dirty) {
         ok(git(dir, ['add', '-A']), 'git add');

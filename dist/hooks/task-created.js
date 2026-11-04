@@ -4,6 +4,20 @@ const input = await readInput();
 const cwd = input.cwd || process.cwd();
 const subject = input.task_subject ?? input.task?.subject ?? '(untitled)';
 const description = taskDescription(input);
+/**
+ * hooks.log is committed with the run. Absolute paths carry usernames and
+ * machine layout, so record the repository-relative path; evidence outside the
+ * repository is reduced to a placeholder that cannot leak a host path.
+ */
+function logEvidence(evidence) {
+    const root = path.resolve(repoRoot(cwd));
+    const absolute = path.isAbsolute(evidence) ? path.resolve(evidence) : path.resolve(root, evidence);
+    const relative = path.relative(root, absolute);
+    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+        return relative.split(path.sep).join('/');
+    }
+    return '<outside-runs>';
+}
 const ac = field(description, 'AC');
 const evidence = field(description, 'Evidence');
 const owner = field(description, 'Owner');
@@ -49,7 +63,7 @@ if (evidence) {
             task: input.task_id,
             subject,
             reason: 'evidence_path_outside_runs',
-            evidence,
+            evidence: logEvidence(evidence),
         });
         fail(`Hugin: Evidence 必须位于 .hugin/runs/<run>/ 下，当前为：${evidence}（解析为 ${absolute}）`);
     }

@@ -84,7 +84,7 @@ export interface ConsoleDeps {
   isAlive?: (pid: number) => boolean;
   health?: (port: number) => boolean | Promise<boolean>;
   /** Injectable so tests can exercise stop logic without signalling a real pid. */
-  terminate?: (pid: number) => void;
+  kill?: (pid: number) => void;
 }
 
 export interface EnsureConsoleDeps extends ConsoleDeps {
@@ -782,22 +782,32 @@ export async function ensureConsole({
   return { running: true, pid, port, url: info.url, stale: false, started: true };
 }
 
-export function stopConsole({
+/**
+ * Stop the console only when the pidfile still describes a live, healthy
+ * server. A pid can be recycled by an unrelated process, so liveness alone is
+ * not enough: the recorded port must answer `/healthz` before any signal is
+ * sent. In every other case only the pidfile is removed.
+ */
+export async function stopConsole({
   root = DEFAULT_ROOT,
+  port = DEFAULT_CONSOLE_PORT,
   deps = {},
-}: { root?: string; deps?: ConsoleDeps } = {}): { stopped: boolean; pid: number | null } {
-  const info = readConsolePid(root);
-  if (!info) return { stopped: false, pid: null };
-  const alive = (deps.isAlive ?? isProcessAlive)(info.pid);
-  if (alive) {
+}: { root?: string; port?: number; deps?: ConsoleDeps } = {}): Promise<{
+  stopped: boolean;
+  pid: number | null;
+}> {
+  const status = await inspectConsole({ root, port, deps });
+  if (status.pid === null) return { stopped: false, pid: null };
+  const pid = status.pid;
+  if (status.running) {
     try {
-      (deps.terminate ?? ((pid: number) => process.kill(pid, 'SIGTERM')))(info.pid);
+      (deps.kill ?? ((target: number) => process.kill(target, 'SIGTERM')))(pid);
     } catch {
       // The process may have exited between the check and the signal.
     }
   }
   removeConsolePid(root);
-  return { stopped: alive, pid: info.pid };
+  return { stopped: status.running, pid };
 }
 
 const MIME: Record<string, string> = {
@@ -857,9 +867,24 @@ function serveStatic(
     sendText(res, 403, 'forbidden');
     return;
   }
+  // Containment on the lexical path is not enough: a symlink under webRoot can
+  // still resolve outside it. Compare real paths before reading anything.
+  let realRoot: string;
+  let realTarget: string;
+  try {
+    realRoot = fs.realpathSync(webRoot);
+    realTarget = fs.realpathSync(target);
+  } catch {
+    sendText(res, 404, 'not found');
+    return;
+  }
+  if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${path.sep}`)) {
+    sendText(res, 403, 'forbidden');
+    return;
+  }
   let body: Buffer;
   try {
-    body = fs.readFileSync(target);
+    body = fs.readFileSync(realTarget);
   } catch {
     sendText(res, 404, 'not found');
     return;
@@ -878,12 +903,32 @@ function serveStatic(
   res.end(method === 'HEAD' ? undefined : body);
 }
 
+/**
+ * Only loopback names are valid. Anything else is a DNS-rebinding attempt: a
+ * foreign page resolves its own hostname to 127.0.0.1, and the Host header is
+ * the only thing that tells the two apart. A missing port means the request
+ * reached the bound port, which is the same listener.
+ */
+function hostAllowed(hostHeader: string | undefined, port: number): boolean {
+  if (typeof hostHeader !== 'string') return false;
+  const value = hostHeader.trim().toLowerCase();
+  return ['127.0.0.1', 'localhost'].some(
+    (name) => value === name || value === `${name}:${port}`,
+  );
+}
+
 export function createConsoleServer({
   root = DEFAULT_ROOT,
   host = '127.0.0.1',
   port = 8787,
 }: { root?: string; host?: string; port?: number } = {}): http.Server {
-  return http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const server = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const bound = server.address();
+    const listeningPort = bound && typeof bound === 'object' ? bound.port : port;
+    if (!hostAllowed(req.headers.host, listeningPort)) {
+      sendText(res, 403, 'forbidden');
+      return;
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       sendJson(res, 405, { error: 'method not allowed' });
       return;
@@ -920,4 +965,5 @@ export function createConsoleServer({
 
     serveStatic(root, url.pathname, res, req.method);
   });
+  return server;
 }

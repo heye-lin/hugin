@@ -864,8 +864,8 @@ async function consoleStatusCommand(args) {
         console.log(`console: stopped  ${status.url}`);
     }
 }
-function consoleStopCommand() {
-    const result = stopConsole({ root: ROOT });
+async function consoleStopCommand() {
+    const result = await stopConsole({ root: ROOT });
     console.log(result.stopped ? `console: stopped  pid=${result.pid}` : 'console: not running');
 }
 function memory() {
@@ -1044,7 +1044,7 @@ switch (cmd) {
             break;
         }
         if (rest.includes('--stop')) {
-            consoleStopCommand();
+            await consoleStopCommand();
             break;
         }
         exitWith(sh(process.execPath, [path.join(ROOT, 'bin', 'hugin-console.mjs'), ...rest]));

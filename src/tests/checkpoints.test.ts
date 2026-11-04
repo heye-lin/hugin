@@ -311,3 +311,68 @@ test('checkpoints lists the ledger and --json emits it verbatim', () => {
   assert.equal(parsed.checkpoints.length, 1);
   assert.equal(parsed.checkpoints[0].tag, 'hugin/r1/T1');
 });
+
+test('rollback rejects a tampered ledger tag before invoking git', () => {
+  const root = makeRepo();
+  const dir = makeTask(root, 'r1', 'T1');
+  fs.writeFileSync(path.join(dir, 'feature.txt'), 'one\n');
+  assert.equal(cli(root, 'checkpoint', 'r1', 'T1', '--no-push').status, 0);
+
+  const file = path.join(root, '.hugin', 'runs', 'r1', 'checkpoints.json');
+  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+  ledger.checkpoints[0].tag = '--git-dir=/tmp/evil';
+  fs.writeFileSync(file, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  // The context root is not a repository: if git ran, the failure would be
+  // about the repository. The tag check must fire first.
+  const notRepo = path.join(root, 'not-a-repo');
+  fs.mkdirSync(notRepo, { recursive: true });
+  assert.throws(
+    () =>
+      checkpoints.rollback(
+        {
+          root: notRepo,
+          runsDir: path.join(root, '.hugin', 'runs'),
+          worktreesDir: path.join(root, '.claude', 'worktrees'),
+        },
+        'r1',
+        'T1',
+      ),
+    (error: any) =>
+      error instanceof checkpoints.CheckpointError && /invalid checkpoint tag/.test(error.message),
+  );
+  assert.equal(git(root, ['branch', '--list', 'restore/*']), '', 'no restore branch is created');
+});
+
+test('checkpoint treats a failing git status as an error, not a clean tree', () => {
+  const root = makeRepo();
+  const dir = makeTask(root, 'r1', 'T1');
+  fs.writeFileSync(path.join(dir, 'feature.txt'), 'one\n');
+  const indexPath = path.resolve(dir, git(dir, ['rev-parse', '--git-path', 'index']));
+  fs.writeFileSync(indexPath, 'XXXX this is not a git index');
+
+  assert.throws(
+    () => checkpoints.checkpoint(context(root), 'r1', 'T1', { push: false }),
+    (error: any) =>
+      error instanceof checkpoints.CheckpointError && /git status|index/i.test(error.message),
+    'a corrupt index must stop the checkpoint',
+  );
+
+  // A directory that is not a repository also fails instead of reporting clean.
+  const notRepo = path.join(root, 'not-a-repo');
+  fs.mkdirSync(path.join(notRepo, 'r1-T1'), { recursive: true });
+  assert.throws(
+    () =>
+      checkpoints.checkpoint(
+        {
+          root: notRepo,
+          runsDir: path.join(root, '.hugin', 'runs'),
+          worktreesDir: notRepo,
+        },
+        'r1',
+        'T1',
+        { push: false },
+      ),
+    /not a git worktree/,
+  );
+});

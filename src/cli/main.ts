@@ -933,8 +933,8 @@ async function consoleStatusCommand(args: string[]): Promise<void> {
   }
 }
 
-function consoleStopCommand(): void {
-  const result = stopConsole({ root: ROOT });
+async function consoleStopCommand(): Promise<void> {
+  const result = await stopConsole({ root: ROOT });
   console.log(result.stopped ? `console: stopped  pid=${result.pid}` : 'console: not running');
 }
 
@@ -1132,7 +1132,7 @@ switch (cmd) {
       break;
     }
     if (rest.includes('--stop')) {
-      consoleStopCommand();
+      await consoleStopCommand();
       break;
     }
     exitWith(sh(process.execPath, [path.join(ROOT, 'bin', 'hugin-console.mjs'), ...rest]));

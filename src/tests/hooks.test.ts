@@ -171,3 +171,89 @@ test('TaskCompleted allows a complete handoff and logs it', (t) => {
   assert.equal(entry.cwd, '.');
   assert.ok(!('session_id' in entry));
 });
+
+test('TaskCreated logs absolute evidence inside the repo as a relative path', (t) => {
+  const root = makeRepo(t);
+  // Inside the repository but outside .hugin/runs: blocked, so it is logged.
+  const absolute = path.join(root, 'notes', 'handoff.json');
+  const result = hook(root, 'task-created.js', {
+    cwd: root,
+    task_id: 'T1',
+    task_subject: 'absolute evidence',
+    task_description: description(absolute),
+  });
+  assert.equal(result.status, 2, 'evidence outside .hugin/runs is still blocked');
+  assert.match(result.stderr, /必须位于/);
+
+  const [entry] = hookLog(root);
+  assert.equal(entry.result, 'blocked');
+  assert.equal(entry.reason, 'evidence_path_outside_runs');
+  assert.equal(entry.evidence, 'notes/handoff.json');
+  assert.ok(!JSON.stringify(entry).includes(root), 'the log has no absolute path');
+});
+
+test('TaskCreated keeps an outside-repo Evidence path out of the log', (t) => {
+  const root = makeRepo(t);
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-outside-'));
+  t.after(() => fs.rmSync(outsideDir, { recursive: true, force: true }));
+  const outside = path.join(outsideDir, 'handoff.json');
+
+  const result = hook(root, 'task-created.js', {
+    cwd: root,
+    task_id: 'T9',
+    task_subject: 'outer evidence',
+    task_description: description(outside),
+  });
+  assert.equal(result.status, 2, 'evidence outside .hugin/runs is still blocked');
+  assert.match(result.stderr, /必须位于/);
+
+  const [entry] = hookLog(root);
+  assert.equal(entry.result, 'blocked');
+  assert.equal(entry.reason, 'evidence_path_outside_runs');
+  assert.equal(entry.evidence, '<outside-runs>');
+  const serialized = JSON.stringify(entry);
+  assert.ok(!serialized.includes(outsideDir), 'the outside directory is not logged');
+  assert.ok(!serialized.includes(outside), 'the outside absolute path is not logged');
+});
+
+test('TaskCompleted logs absolute evidence inside the repo as a relative path', (t) => {
+  const root = makeRepo(t);
+  writeHandoff(root, { run: 'r1', task: 'T1', status: 'complete', ac: [{ criterion: 'x', proof: 'y' }] });
+  const absolute = path.join(root, '.hugin', 'runs', 'r1', 'tasks', 'T1', 'handoff.json');
+
+  const result = hook(root, 'task-completed.js', {
+    cwd: root,
+    task_id: 'T1',
+    task_subject: 'absolute evidence',
+    task_description: description(absolute),
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const [entry] = hookLog(root);
+  assert.equal(entry.result, 'allowed');
+  assert.equal(entry.evidence, '.hugin/runs/r1/tasks/T1/handoff.json');
+  assert.ok(!JSON.stringify(entry).includes(root), 'the log has no absolute path');
+});
+
+test('TaskCompleted keeps an outside-repo Evidence path out of the log', (t) => {
+  const root = makeRepo(t);
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-outside-'));
+  t.after(() => fs.rmSync(outsideDir, { recursive: true, force: true }));
+  const outside = path.join(outsideDir, 'handoff.json');
+  fs.writeFileSync(outside, JSON.stringify({ status: 'complete' }));
+
+  const result = hook(root, 'task-completed.js', {
+    cwd: root,
+    task_id: 'T9',
+    task_subject: 'outer evidence',
+    task_description: description(outside),
+  });
+  assert.equal(result.status, 2, 'evidence outside .hugin/runs is still blocked');
+  assert.match(result.stderr, /必须位于/);
+
+  const [entry] = hookLog(root);
+  assert.equal(entry.result, 'blocked');
+  assert.equal(entry.reason, 'evidence_outside_runs');
+  assert.equal(entry.evidence, '<outside-runs>');
+  assert.ok(!JSON.stringify(entry).includes(outsideDir), 'the outside directory is not logged');
+});

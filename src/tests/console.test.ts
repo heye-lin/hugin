@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -299,11 +300,12 @@ test('console pidfile prevents duplicate starts and clears a stale pid', async (
   assert.equal(spawns, 1, 'an alive console is not started twice');
 
   let terminated = 0;
-  const stopped = stopConsole({
+  const stopped = await stopConsole({
     root,
     deps: {
       isAlive: () => true,
-      terminate: () => {
+      health: () => true,
+      kill: () => {
         terminated += 1;
       },
     },
@@ -312,4 +314,160 @@ test('console pidfile prevents duplicate starts and clears a stale pid', async (
   assert.equal(terminated, 1);
   assert.ok(!fs.existsSync(pidFile), 'stop removes the pidfile');
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('console --stop signals only a live console that answers /healthz', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hugin-stop-'));
+  const pidFile = consolePidPath(root);
+  const writePid = () =>
+    writeJson(pidFile, {
+      pid: 424242,
+      port: 9999,
+      url: 'http://127.0.0.1:9999',
+      startedAt: 'x',
+    });
+  try {
+    // Healthy: exactly one signal, then the pidfile is cleared.
+    writePid();
+    let healthyKills = 0;
+    const healthy = await stopConsole({
+      root,
+      deps: {
+        isAlive: () => true,
+        health: () => true,
+        kill: () => {
+          healthyKills += 1;
+        },
+      },
+    });
+    assert.equal(healthy.stopped, true);
+    assert.equal(healthy.pid, 424242);
+    assert.equal(healthyKills, 1, 'a healthy console is signalled once');
+    assert.ok(!fs.existsSync(pidFile), 'the pidfile is removed after a stop');
+
+    // Alive but not our console (recycled pid or foreign listener): never signal.
+    writePid();
+    let unhealthyKills = 0;
+    const unhealthy = await stopConsole({
+      root,
+      deps: {
+        isAlive: () => true,
+        health: () => false,
+        kill: () => {
+          unhealthyKills += 1;
+        },
+      },
+    });
+    assert.equal(unhealthy.stopped, false);
+    assert.equal(unhealthy.pid, 424242);
+    assert.equal(unhealthyKills, 0, 'an unhealthy pid is not signalled');
+    assert.ok(!fs.existsSync(pidFile), 'the stale pidfile is still cleared');
+
+    // Dead pid: no signal at all.
+    writePid();
+    let deadKills = 0;
+    const dead = await stopConsole({
+      root,
+      deps: {
+        isAlive: () => false,
+        health: () => true,
+        kill: () => {
+          deadKills += 1;
+        },
+      },
+    });
+    assert.equal(dead.stopped, false);
+    assert.equal(deadKills, 0, 'a dead pid is never signalled');
+    assert.ok(!fs.existsSync(pidFile), 'a dead pidfile is removed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function request(
+  port: number,
+  pathname: string,
+  host: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, path: pathname, headers: { Host: host } },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+        });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('console rejects a Host header that is not loopback (DNS rebinding)', async () => {
+  const root = makeFixture();
+  const server = createConsoleServer({ root });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const normal = await request(port, '/api/state?run=testrun', `127.0.0.1:${port}`);
+    assert.equal(normal.status, 200, 'a loopback Host is served');
+    assert.match(normal.body, /testrun/);
+
+    const localhost = await request(port, '/healthz', `localhost:${port}`);
+    assert.equal(localhost.status, 200, 'localhost is a valid loopback Host');
+
+    const noPort = await request(port, '/healthz', 'localhost');
+    assert.equal(noPort.status, 200, 'a Host without a port uses the bound port');
+
+    const evil = await request(port, '/api/state?run=testrun', `evil.example:${port}`);
+    assert.equal(evil.status, 403);
+    assert.ok(!evil.body.includes('testrun'), 'no state data reaches a foreign Host');
+    assert.ok(!evil.body.includes('"tasks"'), 'the 403 body is not state JSON');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('console refuses a static file that escapes web/dist through a link', async (t) => {
+  const root = makeFixture();
+  const built = path.join(root, 'web', 'dist');
+  fs.mkdirSync(built, { recursive: true });
+  fs.writeFileSync(path.join(built, 'index.html'), '<!doctype html><div id="root">built</div>');
+  const sentinel = path.join(root, 'outside-sentinel.txt');
+  fs.writeFileSync(sentinel, 'TOP-SECRET-SENTINEL');
+  try {
+    fs.symlinkSync(sentinel, path.join(built, 'leak.txt'), 'file');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? '';
+    // Only a platform/privilege refusal may skip; any other failure is a bug.
+    if (code === 'EPERM' || code === 'EACCES' || code === 'UNKNOWN' || code === 'ENOTSUP') {
+      t.skip(`symlinks are not permitted here (${code})`);
+      return;
+    }
+    throw error;
+  }
+
+  const server = createConsoleServer({ root });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const leaked = await fetch(`${base}/leak.txt`);
+    assert.equal(leaked.status, 403, 'a link out of webRoot is refused');
+    assert.ok(
+      !(await leaked.text()).includes('TOP-SECRET-SENTINEL'),
+      'the sentinel content is never served',
+    );
+
+    const index = await fetch(`${base}/`);
+    assert.equal(index.status, 200, 'normal static files still work');
+    assert.match(await index.text(), /built/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

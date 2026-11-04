@@ -2,6 +2,7 @@
 !.hugin/runs/.gitkeep
 .hugin/CURRENT_RUN
 .hugin/config.json
+.hugin/console.pid
 .hugin/hook-events.jsonl
 .hugin/phase0/
 .hugin/hooks.log

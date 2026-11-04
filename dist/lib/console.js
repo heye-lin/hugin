@@ -623,21 +623,27 @@ export async function ensureConsole({ root = DEFAULT_ROOT, port = DEFAULT_CONSOL
     writeConsolePid(root, info);
     return { running: true, pid, port, url: info.url, stale: false, started: true };
 }
-export function stopConsole({ root = DEFAULT_ROOT, deps = {}, } = {}) {
-    const info = readConsolePid(root);
-    if (!info)
+/**
+ * Stop the console only when the pidfile still describes a live, healthy
+ * server. A pid can be recycled by an unrelated process, so liveness alone is
+ * not enough: the recorded port must answer `/healthz` before any signal is
+ * sent. In every other case only the pidfile is removed.
+ */
+export async function stopConsole({ root = DEFAULT_ROOT, port = DEFAULT_CONSOLE_PORT, deps = {}, } = {}) {
+    const status = await inspectConsole({ root, port, deps });
+    if (status.pid === null)
         return { stopped: false, pid: null };
-    const alive = (deps.isAlive ?? isProcessAlive)(info.pid);
-    if (alive) {
+    const pid = status.pid;
+    if (status.running) {
         try {
-            (deps.terminate ?? ((pid) => process.kill(pid, 'SIGTERM')))(info.pid);
+            (deps.kill ?? ((target) => process.kill(target, 'SIGTERM')))(pid);
         }
         catch {
             // The process may have exited between the check and the signal.
         }
     }
     removeConsolePid(root);
-    return { stopped: alive, pid: info.pid };
+    return { stopped: status.running, pid };
 }
 const MIME = {
     '.html': 'text/html; charset=utf-8',
@@ -689,9 +695,25 @@ function serveStatic(root, pathname, res, method) {
         sendText(res, 403, 'forbidden');
         return;
     }
+    // Containment on the lexical path is not enough: a symlink under webRoot can
+    // still resolve outside it. Compare real paths before reading anything.
+    let realRoot;
+    let realTarget;
+    try {
+        realRoot = fs.realpathSync(webRoot);
+        realTarget = fs.realpathSync(target);
+    }
+    catch {
+        sendText(res, 404, 'not found');
+        return;
+    }
+    if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${path.sep}`)) {
+        sendText(res, 403, 'forbidden');
+        return;
+    }
     let body;
     try {
-        body = fs.readFileSync(target);
+        body = fs.readFileSync(realTarget);
     }
     catch {
         sendText(res, 404, 'not found');
@@ -710,8 +732,26 @@ function serveStatic(root, pathname, res, method) {
     res.writeHead(200, headers);
     res.end(method === 'HEAD' ? undefined : body);
 }
+/**
+ * Only loopback names are valid. Anything else is a DNS-rebinding attempt: a
+ * foreign page resolves its own hostname to 127.0.0.1, and the Host header is
+ * the only thing that tells the two apart. A missing port means the request
+ * reached the bound port, which is the same listener.
+ */
+function hostAllowed(hostHeader, port) {
+    if (typeof hostHeader !== 'string')
+        return false;
+    const value = hostHeader.trim().toLowerCase();
+    return ['127.0.0.1', 'localhost'].some((name) => value === name || value === `${name}:${port}`);
+}
 export function createConsoleServer({ root = DEFAULT_ROOT, host = '127.0.0.1', port = 8787, } = {}) {
-    return http.createServer(async (req, res) => {
+    const server = http.createServer(async (req, res) => {
+        const bound = server.address();
+        const listeningPort = bound && typeof bound === 'object' ? bound.port : port;
+        if (!hostAllowed(req.headers.host, listeningPort)) {
+            sendText(res, 403, 'forbidden');
+            return;
+        }
         if (req.method !== 'GET' && req.method !== 'HEAD') {
             sendJson(res, 405, { error: 'method not allowed' });
             return;
@@ -745,4 +785,5 @@ export function createConsoleServer({ root = DEFAULT_ROOT, host = '127.0.0.1', p
         }
         serveStatic(root, url.pathname, res, req.method);
     });
+    return server;
 }

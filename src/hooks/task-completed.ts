@@ -18,6 +18,21 @@ const subject = input.task_subject ?? input.task?.subject ?? '(untitled)';
 const description = taskDescription(input);
 const evidence = field(description, 'Evidence');
 
+/**
+ * hooks.log is committed with the run. Absolute paths carry usernames and
+ * machine layout, so record the repository-relative path; evidence outside the
+ * repository is reduced to a placeholder that cannot leak a host path.
+ */
+function logEvidence(value: string): string {
+  const root = path.resolve(repoRoot(cwd));
+  const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(root, value);
+  const relative = path.relative(root, absolute);
+  if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    return relative.split(path.sep).join('/');
+  }
+  return '<outside-runs>';
+}
+
 if (isYes(process.env.HUGIN_SKIP_EVIDENCE)) {
   logEvent(cwd, 'TaskCompleted', {
     result: 'skipped',
@@ -60,7 +75,7 @@ if (absolute !== runsRoot && !absolute.startsWith(`${runsRoot}${path.sep}`)) {
     task: input.task_id,
     subject,
     reason: 'evidence_outside_runs',
-    evidence,
+    evidence: logEvidence(evidence),
   });
   fail(`Hugin: Evidence 必须位于 .hugin/runs/ 下，当前解析为：${absolute}`);
 }
@@ -74,7 +89,7 @@ try {
     task: input.task_id,
     subject,
     reason: 'missing_or_invalid_handoff',
-    evidence,
+    evidence: logEvidence(evidence),
   });
   fail([
     `Hugin: 找不到或无法解析证据文件：${evidence}`,
@@ -90,7 +105,7 @@ if (handoff?.status !== 'complete') {
     subject,
     reason: 'handoff_not_complete',
     status: handoff?.status ?? '(missing)',
-    evidence,
+    evidence: logEvidence(evidence),
   });
   fail([
     `Hugin: ${evidence} 的 status 是 "${handoff?.status ?? '(missing)'}"，只有 complete 才能完成任务。`,
@@ -102,6 +117,6 @@ logEvent(cwd, 'TaskCompleted', {
   result: 'allowed',
   task: input.task_id,
   subject,
-  evidence,
+  evidence: logEvidence(evidence),
 });
 ok();
