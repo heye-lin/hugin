@@ -230,16 +230,21 @@ export function rollback(ctx, runArg, taskArg, options = {}) {
         throw new CheckpointError(`checkpoint tag ${entry.tag} does not exist`);
     }
     const commit = tagCommit.stdout.trim();
-    const status = git(ctx.root, ['status', '--porcelain']);
-    if (status.status !== 0) {
-        throw new CheckpointError((status.stderr || 'failed to read git status').trim());
-    }
-    if (status.stdout.trim() !== '') {
-        throw new CheckpointError('working tree is dirty; commit or stash changes before rollback');
-    }
-    const current = currentBranch(ctx.root);
-    if (current === 'main' || current === 'master') {
-        throw new CheckpointError(`refusing to rollback from ${current}; switch to a working branch first`);
+    const dryRun = options.dryRun === true;
+    // A preview must work from any state: the dirty-tree and main/master guards
+    // only protect operations that would actually move the checkout.
+    if (!dryRun) {
+        const status = git(ctx.root, ['status', '--porcelain']);
+        if (status.status !== 0) {
+            throw new CheckpointError((status.stderr || 'failed to read git status').trim());
+        }
+        if (status.stdout.trim() !== '') {
+            throw new CheckpointError('working tree is dirty; commit or stash changes before rollback');
+        }
+        const current = currentBranch(ctx.root);
+        if (current === 'main' || current === 'master') {
+            throw new CheckpointError(`refusing to rollback from ${current}; switch to a working branch first`);
+        }
     }
     const branch = (options.branch ?? '').trim() || `restore/${run}/${task}-${stamp()}`;
     requireBranch(branch);
@@ -250,7 +255,6 @@ export function rollback(ctx, runArg, taskArg, options = {}) {
             throw new CheckpointError(`branch ${branch} already exists at ${at.slice(0, 7)}, not ${commit.slice(0, 7)}`);
         }
     }
-    const dryRun = options.dryRun === true;
     if (!dryRun) {
         const checked = git(ctx.root, exists ? ['checkout', branch] : ['checkout', '-b', branch, commit]);
         if (checked.status !== 0) {

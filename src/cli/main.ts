@@ -198,6 +198,14 @@ function samePath(a: string, b: string): boolean {
   return isWin ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
+function realpathOrNull(target: string): string | null {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return null;
+  }
+}
+
 function taskWorktree(run: string, task: string): string {
   const fallback = path.join(WORKTREES, `${run}-${task}`);
   const recorded = read(path.join(RUNS, run, 'tasks', task, 'worktree.txt')).trim();
@@ -375,6 +383,19 @@ function collect(run: string | undefined, task: string | undefined): void {
   if (stat.isSymbolicLink() || !stat.isFile()) {
     fail(`handoff must be a regular file, not a link or directory: ${from}`);
   }
+  // A link in any parent directory still resolves here; compare real paths so a
+  // symlinked task directory cannot pull in a file from outside the worktree.
+  const worktreeReal = realpathOrNull(worktree);
+  const fromReal = realpathOrNull(from);
+  if (worktreeReal === null || fromReal === null) {
+    fail(`could not resolve the handoff path: ${from}`);
+  }
+  if (!inside(worktreeReal, fromReal)) {
+    fail(`handoff resolves outside the worktree: ${from} -> ${fromReal}`);
+  }
+  if (stat.size > MAX_LOG_BYTES) {
+    fail(`handoff is larger than 5 MB: ${from}`);
+  }
 
   const text = read(from);
   let handoff: any;
@@ -432,6 +453,13 @@ function collect(run: string | undefined, task: string | undefined): void {
     }
   }
 
+  if (!complete) {
+    // Collected evidence is authoritative: a blocked or missing status must not
+    // replace an earlier complete handoff or import logs alongside it.
+    console.error(`handoff status: ${handoff.status ?? '(missing)'} — TaskCompleted will block.`);
+    process.exit(1);
+  }
+
   write(to, text);
   console.log(`collected 1 file into .hugin/runs/${run}:`);
   console.log(`  ${relative}`);
@@ -439,7 +467,6 @@ function collect(run: string | undefined, task: string | undefined): void {
   const logs: string[] = [];
   const logsPrefix = `.hugin/runs/${run}/logs/`;
   const runsReal = fs.realpathSync(RUNS);
-  const worktreeReal = fs.realpathSync(worktree);
   for (const entry of Array.isArray(handoff.commands_run) ? handoff.commands_run : []) {
     const ref = typeof entry?.log === 'string' ? entry.log.trim().replace(/\\/g, '/') : '';
     if (!ref || !ref.startsWith(logsPrefix)) continue;
@@ -499,11 +526,6 @@ function collect(run: string | undefined, task: string | undefined): void {
     logs.push(ref);
   }
   for (const ref of logs) console.log(`  ${ref}`);
-
-  if (!complete) {
-    console.error(`handoff status: ${handoff.status ?? '(missing)'} — TaskCompleted will block.`);
-    process.exit(1);
-  }
 
   const collected = {
     run,
@@ -809,12 +831,24 @@ async function statusJson(args: string[]): Promise<void> {
 
 async function statusWatch(showAll: boolean, intervalSeconds: number): Promise<void> {
   const interval = Math.max(0.1, intervalSeconds) * 1000;
+  // Test hook: a bounded watcher stops on its own, which makes the render/exit
+  // path testable without a signal. Unset (or not a positive integer) watches
+  // until SIGINT/SIGTERM, which is the only path a real terminal takes.
+  const requestedTicks = Number(process.env.HUGIN_WATCH_MAX_TICKS);
+  const maxTicks = Number.isInteger(requestedTicks) && requestedTicks > 0 ? requestedTicks : 0;
+  let ticks = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
   const render = () => {
     process.stdout.write('\x1B[2J\x1B[H');
     renderStatus(showAll);
+    ticks += 1;
+    if (maxTicks > 0 && ticks >= maxTicks) {
+      if (timer !== undefined) clearInterval(timer);
+      process.exit(0);
+    }
   };
   render();
-  const timer = setInterval(render, interval);
+  timer = setInterval(render, interval);
   const stop = () => {
     clearInterval(timer);
     process.exit(0);

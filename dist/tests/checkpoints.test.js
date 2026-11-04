@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import * as checkpoints from '../lib/checkpoints.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
 const CLI = path.join(REPO_ROOT, 'bin', 'hugin-cli.mjs');
@@ -52,6 +53,13 @@ function ledgerOf(root, run) {
 }
 function defaultBranch(root) {
     return git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
+}
+function context(root) {
+    return {
+        root,
+        runsDir: path.join(root, '.hugin', 'runs'),
+        worktreesDir: path.join(root, '.claude', 'worktrees'),
+    };
 }
 test('checkpoint creates a commit, an annotated tag, and a run ledger', () => {
     const root = makeRepo();
@@ -123,6 +131,45 @@ test('rollback --dry-run prints the restore branch without touching the working 
     assert.equal(git(root, ['rev-parse', '--abbrev-ref', 'HEAD']), branchBefore);
     assert.equal(git(root, ['rev-parse', 'HEAD']), headBefore);
     assert.equal(git(root, ['branch', '--list', 'restore/*']), '', 'no branch is created');
+});
+test('rollback --dry-run previews from a dirty tree that a real rollback still refuses', () => {
+    const root = makeRepo();
+    const dir = makeTask(root, 'r1', 'T1');
+    fs.writeFileSync(path.join(dir, 'feature.txt'), 'one\n');
+    assert.equal(cli(root, 'checkpoint', 'r1', 'T1', '--no-push').status, 0);
+    const tagCommit = git(dir, ['rev-parse', 'refs/tags/hugin/r1/T1^{commit}']);
+    git(root, ['checkout', '-b', 'integration']);
+    const branchBefore = git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const headBefore = git(root, ['rev-parse', 'HEAD']);
+    fs.appendFileSync(path.join(root, 'README.md'), 'dirty\n');
+    const preview = checkpoints.rollback(context(root), 'r1', 'T1', { dryRun: true });
+    assert.equal(preview.dryRun, true);
+    assert.match(preview.branch, /^restore\/r1\/T1-/);
+    assert.equal(preview.commit, tagCommit, 'the preview points at the checkpoint tag');
+    assert.equal(preview.created, true);
+    assert.equal(git(root, ['rev-parse', '--abbrev-ref', 'HEAD']), branchBefore, 'HEAD branch is unchanged');
+    assert.equal(git(root, ['rev-parse', 'HEAD']), headBefore, 'HEAD commit is unchanged');
+    assert.equal(git(root, ['branch', '--list', 'restore/*']), '', 'no branch is created');
+    assert.match(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), /dirty/, 'dirty changes stay');
+    assert.throws(() => checkpoints.rollback(context(root), 'r1', 'T1'), /dirty/, 'a real rollback still refuses a dirty tree');
+});
+test('rollback --dry-run previews from main that a real rollback still refuses', () => {
+    const root = makeRepo();
+    const dir = makeTask(root, 'r1', 'T1');
+    fs.writeFileSync(path.join(dir, 'feature.txt'), 'one\n');
+    assert.equal(cli(root, 'checkpoint', 'r1', 'T1', '--no-push').status, 0);
+    const tagCommit = git(dir, ['rev-parse', 'refs/tags/hugin/r1/T1^{commit}']);
+    const branchBefore = defaultBranch(root);
+    assert.ok(branchBefore === 'main' || branchBefore === 'master', `unexpected default branch ${branchBefore}`);
+    const headBefore = git(root, ['rev-parse', 'HEAD']);
+    const preview = checkpoints.rollback(context(root), 'r1', 'T1', { dryRun: true });
+    assert.equal(preview.dryRun, true);
+    assert.match(preview.branch, /^restore\/r1\/T1-/);
+    assert.equal(preview.commit, tagCommit, 'the preview points at the checkpoint tag');
+    assert.equal(git(root, ['rev-parse', '--abbrev-ref', 'HEAD']), branchBefore);
+    assert.equal(git(root, ['rev-parse', 'HEAD']), headBefore);
+    assert.equal(git(root, ['branch', '--list', 'restore/*']), '', 'no branch is created');
+    assert.throws(() => checkpoints.rollback(context(root), 'r1', 'T1'), /refusing to rollback from/, 'a real rollback still refuses to start from main/master');
 });
 test('rollback creates a restore branch that points at the checkpoint tag', () => {
     const root = makeRepo();

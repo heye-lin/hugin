@@ -123,20 +123,23 @@ test('collect copies a complete handoff and rejects a blocked one', (t) => {
     const dir = worktreePath(root, 'r1-T1');
     const handoffPath = path.join(dir, '.hugin', 'runs', 'r1', 'tasks', 'T1', 'handoff.json');
     fs.mkdirSync(path.dirname(handoffPath), { recursive: true });
-    fs.writeFileSync(handoffPath, JSON.stringify({
+    const completeText = JSON.stringify({
         run: 'r1',
         task: 'T1',
         status: 'complete',
         files_changed: ['a.py'],
         ac: [{ criterion: 'x', proof: 'y' }],
-    }));
+    });
+    fs.writeFileSync(handoffPath, completeText);
     const ok = cli(root, 'collect', 'r1', 'T1');
     assert.equal(ok.status, 0, ok.stderr);
-    assert.ok(fs.existsSync(path.join(root, '.hugin', 'runs', 'r1', 'tasks', 'T1', 'handoff.json')));
+    const collectedHandoff = path.join(root, '.hugin', 'runs', 'r1', 'tasks', 'T1', 'handoff.json');
+    assert.ok(fs.existsSync(collectedHandoff));
     fs.writeFileSync(handoffPath, JSON.stringify({ run: 'r1', task: 'T1', status: 'blocked' }));
     const blocked = cli(root, 'collect', 'r1', 'T1');
     assert.equal(blocked.status, 1);
     assert.match(blocked.stderr, /status: blocked/);
+    assert.equal(fs.readFileSync(collectedHandoff, 'utf8'), completeText, 'a blocked handoff must not overwrite already collected complete evidence');
     fs.writeFileSync(handoffPath, JSON.stringify({ run: 'r1', task: 'T1', status: 'complete', branch: 'no-such-branch' }));
     const missingBranch = cli(root, 'collect', 'r1', 'T1');
     assert.equal(missingBranch.status, 1);
@@ -193,6 +196,34 @@ test('collect ignores forged reviews and refuses links', (t) => {
     assert.equal(linked.status, 1);
     assert.match(linked.stderr, /regular file/);
 });
+test('collect rejects a handoff reached through a symlinked parent directory', (t) => {
+    const root = makeRepo(t);
+    assert.equal(cli(root, 'work', 'r1', 'T1').status, 0);
+    const dir = worktreePath(root, 'r1-T1');
+    // `tasks` is replaced by a link, so the handoff must mirror the task layout
+    // inside the outside directory for the lookup to reach it.
+    const outside = path.join(root, 'outside-tasks');
+    fs.mkdirSync(path.join(outside, 'T1'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'T1', 'handoff.json'), JSON.stringify(completeHandoff('r1', 'T1')));
+    const runDir = path.join(dir, '.hugin', 'runs', 'r1');
+    fs.mkdirSync(runDir, { recursive: true });
+    try {
+        fs.symlinkSync(outside, path.join(runDir, 'tasks'), 'dir');
+    }
+    catch (error) {
+        const code = error.code;
+        // Only a platform/privilege refusal may skip; any other failure is a bug.
+        if (code === 'EPERM' || code === 'EACCES' || code === 'UNKNOWN' || code === 'ENOTSUP') {
+            t.skip(`symlinks are not permitted here (${code})`);
+            return;
+        }
+        throw error;
+    }
+    const result = cli(root, 'collect', 'r1', 'T1');
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /outside the worktree/);
+    assert.ok(!fs.existsSync(path.join(root, '.hugin', 'runs', 'r1', 'tasks', 'T1', 'handoff.json')), 'the escaped handoff is not imported');
+});
 test('status --json reports counts, queue and workers in a parseable object', (t) => {
     const root = makeRepo(t);
     const runDir = path.join(root, '.hugin', 'runs', 'r1');
@@ -227,25 +258,33 @@ test('status --json reports counts, queue and workers in a parseable object', (t
     assert.equal(typeof payload.console.running, 'boolean');
     assert.equal(payload.console.port, 8787);
 });
-test('status --watch clears the screen and keeps redrawing until interrupted', async (t) => {
+test('status --watch redraws and exits 0 after HUGIN_WATCH_MAX_TICKS renders', { timeout: 20000 }, async (t) => {
     const root = makeRepo(t);
-    const child = spawn(process.execPath, [path.join(root, 'bin', 'hugin-cli.mjs'), 'status', '--watch', '--interval', '0.2'], { cwd: root, env: { ...process.env, HUGIN_AGENTS_JSON: '[]' } });
+    fs.writeFileSync(path.join(root, '.hugin', 'CURRENT_RUN'), 'r1\n');
+    fs.writeFileSync(path.join(root, '.hugin', 'runs', 'r1', 'board.json'), JSON.stringify({
+        run: 'r1',
+        tasks: [{ id: 'T1', title: 'waiting', owner: 'impl-1', status: 'pending', deps: [] }],
+    }));
+    const child = spawn(process.execPath, [path.join(root, 'bin', 'hugin-cli.mjs'), 'status', '--watch', '--interval', '0.1'], { cwd: root, env: { ...ENV, HUGIN_AGENTS_JSON: '[]', HUGIN_WATCH_MAX_TICKS: '2' } });
+    t.after(() => {
+        if (child.exitCode === null && child.signalCode === null)
+            child.kill('SIGKILL');
+    });
     let output = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
         output += chunk;
     });
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    child.kill('SIGTERM');
     const exitCode = await new Promise((resolve) => {
         child.once('exit', (code) => resolve(code));
     });
-    // Windows terminates a process on SIGTERM without running the JS handler, so
-    // the exit code is null there; Ctrl-C in a real terminal goes through SIGINT.
-    assert.ok(exitCode === 0 || exitCode === null, `unexpected exit code: ${exitCode}`);
-    const redraws = (output.match(/counts:/g) ?? []).length;
-    assert.ok(redraws >= 2, `expected at least two redraws, got ${redraws}`);
-    assert.match(output, /\x1B\[2J/, 'the screen is cleared between redraws');
+    // The tick budget makes the watcher exit on its own, so this is an exact exit
+    // code. Real Ctrl-C (SIGINT) is still verified by hand in an interactive
+    // terminal; it cannot be reproduced reliably from this test on Windows.
+    assert.equal(exitCode, 0, `watch exited with ${exitCode}\n${output}`);
+    assert.match(output, /counts: running=\d+ queued=\d+/, 'counts are rendered');
+    assert.match(output, /tasks: 1 total/, 'task summary is rendered');
+    assert.match(output, /\x1B\[2J/, 'the screen is cleared before rendering');
 });
 test('console --status reports a stopped console without binding a port', (t) => {
     const root = makeRepo(t);
